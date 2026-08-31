@@ -1,18 +1,25 @@
 /**
- * @doiiarx/dsh-todo-continuation —— Todo 停止门禁 + 提示插件（host 级）。
+ * @doiiarx/dsh-todo-continuation — Todo stop gate + prompt plugin (host level).
  *
- * 双面包（与 @doiiarx/dsh-user-language 同一套工作模式）：
- *   - 宿主端（本文件）：注册 `todo-continuation` settings 命名空间
- *     （`waitingTodoPrefixes` / `noTodoPromptEveryNTurns` /
- *     `staleTodoPromptEveryNTurns`），监听 `agent/turn-stopping`，实现：
- *       1) 门禁：当前 turn 有未完成且非「等待用户」的 todo 时继续推进；
- *       2) 无 Todo 提示：连续 N 轮没有任何 todo 快照时提示模型开始用 todo；
- *       3) 过期 Todo 提示：已有 todo 却连续 M 轮不更新时提示模型保持最新。
- *     三个阈值都从 settings 实时读取，用户在设置页改动后下一轮立即生效。
- *   - 浏览器端（client.js）：在设置页渲染「Todo 门禁」小节，编辑三个字段。
+ * Two-sided package (same working pattern as @doiiarx/dsh-user-language):
+ *   - Host side (this file): registers the `todo-continuation` settings namespace
+ *     (`waitingTodoPrefixes` / `noTodoPromptEveryNTurns` /
+ *     `staleTodoPromptEveryNTurns`), listens for `agent/turn-stopping`, and
+ *     implements:
+ *       1) Stop gate: keeps the turn going when it has unfinished, non
+ *          "waiting-for-user" todos;
+ *       2) No-todo prompt: after N consecutive turns without any todo snapshot,
+ *          reminds the model to start using todos;
+ *       3) Stale-todo prompt: when todos exist but go M consecutive turns
+ *          without an update, reminds the model to keep them current.
+ *     All three thresholds are read live from settings, so a change in the
+ *     settings page takes effect on the next turn.
+ *   - Browser side (client.js): renders a "Todo Gate" section in the settings
+ *     page for editing the three fields.
  *
- * 失败隔离（与 user-language 相同）：本文件保持零外部依赖，schemastery 在
- * apply() 里动态 import，任何失败降级为诊断日志，不会拖垮整个 profile。
+ * Failure isolation (same as user-language): this file keeps zero external
+ * dependencies; schemastery is imported dynamically in apply() and any failure
+ * degrades to a diagnostic log without taking down the whole profile.
  */
 
 export const name = 'todo-continuation-supervisor'
@@ -20,7 +27,7 @@ export const inject = ['settings']
 
 const SETTINGS_NS = 'todo-continuation'
 const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'todo-continuation' }
-const DEFAULT_WAITING_PREFIXES = ['信息不足：', '要求用户确认：']
+const DEFAULT_WAITING_PREFIXES = ['[INFO_NEEDED]', '[WAITING_USER]']
 const DEFAULT_NO_TODO_EVERY = 5
 const DEFAULT_STALE_EVERY = 20
 
@@ -32,7 +39,7 @@ function report(ctx, scope, error) {
   console.error(message)
 }
 
-/** 读取某个 turn 内最新的 todo 快照；该 turn 内没有 todo/write 时返回 undefined。 */
+/** Reads the latest todo snapshot within a turn; returns undefined when no todo/write happened in that turn. */
 function currentTurnTodos(session, turn) {
   let insideTurn = false
   let latest
@@ -73,7 +80,7 @@ function staleTodoPromptMessage(everyNTurns) {
     + 'and complete finished items. A stale list does not reflect the remaining work.'
 }
 
-/** 构造一个标识过的 user message（不依赖 @deepseek-ai/dsh-llm）。 */
+/** Builds a flagged user message (without depending on @deepseek-ai/dsh-llm). */
 function steerMessage(text) {
   return {
     id: crypto.randomUUID(),
@@ -83,7 +90,7 @@ function steerMessage(text) {
   }
 }
 
-/** 读取并归一化 settings 里的三个配置值。 */
+/** Reads and normalizes the three config values from settings. */
 function readConfig(scope) {
   const value = scope?.get?.() ?? {}
   const prefixes = Array.isArray(value.waitingTodoPrefixes) && value.waitingTodoPrefixes.length > 0
@@ -100,7 +107,7 @@ function readConfig(scope) {
 
 export async function apply(ctx, config = {}) {
   console.log('[todo-continuation] apply() invoked, inject settings =', ctx.get('settings') !== undefined)
-  // 1) 注册可持久化的 settings 命名空间（用户在设置页编辑它）。
+  // 1) Register the persistable settings namespace (edited in the settings page).
   let scope
   try {
     const { default: Schema } = await import('schemastery')
@@ -120,7 +127,7 @@ export async function apply(ctx, config = {}) {
     scope = null
   }
 
-  // 2) 每个 session 的提示状态（turn 去重 + 两条独立计数 + 各自冷却）。
+  // 2) Per-session prompt state (turn dedup + two independent counters + per-counter cooldown).
   const states = new Map()
 
   ctx.on('session/disposed', (session) => {
@@ -132,7 +139,7 @@ export async function apply(ctx, config = {}) {
     const cfg = readConfig(scope)
     const todos = currentTurnTodos(agent.session, turn)
     if (todos !== undefined) {
-      // 本轮写了 todo：结束两条计数，记录最近一次写入轮。
+      // Todos written this turn: reset both counters and record the latest write turn.
       const state = states.get(agent.session.id) ?? emptyState()
       state.noTodoCount = 0
       state.staleCount = 0
@@ -147,7 +154,7 @@ export async function apply(ctx, config = {}) {
     if (state.lastCountedTurn === turn) return
     state.lastCountedTurn = turn
     if (state.lastTodoWriteTurn === 0) {
-      // 还没有列表：累计「无 Todo」轮数。
+      // No list yet: accumulate the "no todo" turn count.
       state.noTodoCount += 1
       if (state.noTodoCount >= cfg.noTodoEvery
         && (state.lastNoTodoPromptTurn === 0 || turn - state.lastNoTodoPromptTurn > cfg.noTodoEvery)) {
@@ -156,7 +163,7 @@ export async function apply(ctx, config = {}) {
         state.noTodoCount = 0
       }
     } else {
-      // 已有列表但本轮没写：累计「过期」轮数。
+      // List exists but nothing written this turn: accumulate the "stale" turn count.
       state.staleCount += 1
       if (state.staleCount >= cfg.staleEvery
         && (state.lastStalePromptTurn === 0 || turn - state.lastStalePromptTurn > cfg.staleEvery)) {

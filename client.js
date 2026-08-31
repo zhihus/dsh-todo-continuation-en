@@ -1,9 +1,10 @@
 /**
- * @doiiarx/dsh-todo-continuation —— 浏览器设置页（Todo 门禁小节）。
- * 与 @doiiarx/dsh-user-language 的 client.js 同一套加载模式：
- * `window.__ModuleLoader__.load` 注册浏览器端插件，绑定 `todo-continuation`
- * settings 命名空间，在设置页渲染三个可编辑字段。保存后宿主端下一轮
- * turn-stopping 即按新值生效，无需重启。
+ * @doiiarx/dsh-todo-continuation — browser settings page (Todo Gate section).
+ * Same loading pattern as the client.js of @doiiarx/dsh-user-language:
+ * `window.__ModuleLoader__.load` registers the browser-side plugin, binds the
+ * `todo-continuation` settings namespace, and renders three editable fields in
+ * the settings page. After saving, the host side applies the new values on the
+ * next turn-stopping, no restart needed.
  */
 window.__ModuleLoader__.load({
   id: "@doiiarx/dsh-todo-continuation",
@@ -64,14 +65,14 @@ window.__ModuleLoader__.load({
 
       return h("div", { style: { display: "grid", gap: "18px", color: "var(--dsw-alias-label-primary)" } },
         h("div", null,
-          h("h2", { style: { margin: "0 0 6px" } }, "Todo 门禁"),
+          h("h2", { style: { margin: "0 0 6px" } }, "Todo Gate"),
           h("p", { style: { margin: 0, color: "var(--dsw-alias-label-secondary)" } },
-            "控制模型使用 Todo 列表的方式：未完成工作不放行结束，长期不用或不更新 Todo 列表时给出建议性提示。")
+            "Controls how the model uses the todo list: unfinished work is not allowed to end, and advisory prompts fire when todos are unused or not updated for a while.")
         ),
-        busy ? h("p", { style: { color: "var(--dsw-alias-label-secondary)" } }, "正在读取配置…")
+        busy ? h("p", { style: { color: "var(--dsw-alias-label-secondary)" } }, "Loading configuration…")
           : h(React.Fragment, null,
-            numberField("无 Todo 提示间隔", "连续多少轮没有任何 Todo 后，提示模型开始用 Todo 管理任务。", "noTodoPromptEveryNTurns", current.noTodo),
-            numberField("过期 Todo 提示间隔", "已有 Todo 列表却连续多少轮不更新后，提示模型保持列表最新。", "staleTodoPromptEveryNTurns", current.stale),
+            numberField("No-todo prompt interval", "After how many consecutive turns without any todo, prompt the model to start managing tasks with todos.", "noTodoPromptEveryNTurns", current.noTodo),
+            numberField("Stale-todo prompt interval", "When a todo list exists but is not updated for this many consecutive turns, prompt the model to keep the list current.", "staleTodoPromptEveryNTurns", current.stale),
             h("label", {
               "data-settings-item": "waitingTodoPrefixes",
               style: {
@@ -80,14 +81,14 @@ window.__ModuleLoader__.load({
                 background: "var(--dsw-alias-bg-layer-1)",
               },
             },
-              h("strong", null, "等待用户前缀"),
+              h("strong", null, "Waiting-for-user prefixes"),
               h("small", { style: { color: "var(--dsw-alias-label-tertiary)" } },
-                "每行一个前缀。未完成项以这些前缀开头时视为「等待用户」，允许结束。"),
+                "One prefix per line. Unfinished items starting with these prefixes are treated as \"waiting for the user\" and are allowed to end."),
               h("textarea", {
                 value: current.prefixes,
                 disabled: !snapshot.writable,
                 rows: 3,
-                placeholder: "信息不足：\n要求用户确认：",
+                placeholder: "[INFO_NEEDED]\n[WAITING_USER]",
                 style: {
                   padding: "11px",
                   border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "10px",
@@ -111,7 +112,7 @@ window.__ModuleLoader__.load({
           name: "settings.section",
           id: NAMESPACE,
           order: 140,
-          label: "Todo 门禁",
+          label: "Todo Gate",
           inject: () => ({ scope }),
         }, TodoContinuationSettings),
       );
@@ -123,12 +124,12 @@ window.__ModuleLoader__.load({
         },
       });
       search.register(NAMESPACE, {
-        label: "Todo 门禁",
-        keywords: "todo 待办 任务 列表 门禁 提示 过期 更新",
+        label: "Todo Gate",
+        keywords: "todo gate waiting prefix prompt stale update",
         items: [
-          { id: "noTodoPromptEveryNTurns", label: "无 Todo 提示间隔", desc: "连续无 Todo 后提示", keywords: "todo 待办 提示 间隔" },
-          { id: "staleTodoPromptEveryNTurns", label: "过期 Todo 提示间隔", desc: "Todo 不更新后提示", keywords: "todo 待办 过期 更新 间隔" },
-          { id: "waitingTodoPrefixes", label: "等待用户前缀", desc: "视为等待用户的前缀", keywords: "等待 用户 前缀 确认" },
+          { id: "noTodoPromptEveryNTurns", label: "No-todo prompt interval", desc: "Prompt after turns without any todo", keywords: "todo gate no-todo prompt interval" },
+          { id: "staleTodoPromptEveryNTurns", label: "Stale-todo prompt interval", desc: "Prompt when the todo list is not updated", keywords: "todo gate stale update prompt interval" },
+          { id: "waitingTodoPrefixes", label: "Waiting-for-user prefixes", desc: "Prefixes treated as waiting for the user", keywords: "waiting user prefix confirm info" },
         ],
       });
     }

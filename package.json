@@ -10,6 +10,10 @@
     "./client": "./client.js",
     "./package.json": "./package.json"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhihus/dsh-todo-continuation-en.git"
+  },
   "files": ["index.js", "client.js", "cordis.patch.yml", "README.md", "README.en.md"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
@@ -23,6 +27,9 @@
     }
   },
   "license": "MIT",
+  "scripts": {
+    "test": "node test/todo-continuation.test.js"
+  },
   "dependencies": {
     "schemastery": "^3.18.0"
   }

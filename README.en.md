@@ -75,7 +75,7 @@ Then run `pnpm install` in that profile directory.
 The browser settings page can only read the `todo-continuation` namespace if it is
 listed in the host apiproxy settings allowlist `WEB_SETTINGS_NAMESPACES`
 (`packages/host/apiproxy/src/api-proxy.ts`); otherwise the settings page keeps
-showing "正在读取配置…" (the namespace is not exposed to the client).
+showing "Loading configuration…" (the namespace is not exposed to the client).
 
 ```ts
 const WEB_SETTINGS_NAMESPACES = [
@@ -93,7 +93,7 @@ Editable in the settings page's "Todo gate" section:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `waitingTodoPrefixes` | `信息不足：`, `要求用户确认：` | unfinished items with these prefixes count as "waiting for the user" and allow a stop |
+| `waitingTodoPrefixes` | `[INFO_NEEDED]`, `[WAITING_USER]` | unfinished items with these prefixes count as "waiting for the user" and allow a stop |
 | `noTodoPromptEveryNTurns` | 5 | consecutive turns without a todo before prompting to start one |
 | `staleTodoPromptEveryNTurns` | 20 | consecutive turns without an update to an existing list before prompting to refresh it |
 
