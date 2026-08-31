@@ -1,55 +1,62 @@
 # dsh-todo-continuation
 
-[简体中文](README.md) | [English](README.en.md)
+[简体中文](README.zh.md) | [English](README.md)
 
-DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stopping` 边界依据
-当前 turn 的最新 `todo/write` 快照决定是否放行结束，并对「长期不用 Todo」和
-「长期不更新 Todo」给出建议性提示。三个阈值均可在 Web 设置页配置，保存后下一轮
-立即生效。
+A todo-backed turn-stop gate and prompt plugin for DeepSeek Harness (DSH). At the
+`agent/turn-stopping` boundary it reads the current turn's latest `todo/write`
+snapshot and decides whether the turn may stop, plus two advisory prompts for
+"no todo for a while" and "todo not updated for a while". All three thresholds
+are editable in the web settings page and take effect on the next turn.
 
-> 本插件属于 [dsh-plugins](https://github.com/DoiiarX/dsh-plugins) 合集，
-> 完整的自研插件索引见该仓库。
+> Part of the [dsh-plugins](https://github.com/DoiiarX/dsh-plugins) collection —
+> see that repository for the full index of self-built plugins.
 
-## 功能
+## Features
 
-1. **停止门禁**：当前 turn 存在未完成、且不以「等待用户」前缀开头的 todo 时，
-   注入一条继续消息，让模型在同一 turn 内继续推进，而不是带着未完成项结束。
-2. **无 Todo 提示**：连续 `noTodoPromptEveryNTurns`（默认 5）轮没有任何 todo 快照时，
-   提示模型用 `todo_write` 规划与跟踪工作。
-3. **过期 Todo 提示**：已有 todo 列表却连续 `staleTodoPromptEveryNTurns`（默认 20）
-   轮不更新时，提示模型保持列表最新。
+1. **Stop gate**: when the current turn has unfinished todos that do not start
+   with a configured user-wait prefix, it injects a continuation message so the
+   model keeps working instead of ending with unfinished items.
+2. **No-todo prompt**: after `noTodoPromptEveryNTurns` (default 5) consecutive
+   turns with no todo snapshot, it prompts the model to plan with `todo_write`.
+3. **Stale-todo prompt**: when a todo list exists but goes
+   `staleTodoPromptEveryNTurns` (default 20) consecutive turns without an update,
+   it prompts the model to keep the list current.
 
-插件绝不创建、删除、完成或改写 Todo——列表的唯一作者仍是模型。门禁只把关「能否
-结束」，两条提示都是建议性的（不阻止结束），且各自每间隔最多触发一次，避免每轮
-催促。
+The plugin never creates, removes, completes, or rewrites todos — the model stays
+the sole author. The gate only guards whether a stop is allowed; the two prompts
+are advisory (they do not block a stop by themselves) and fire at most once per
+interval so the model is not nagged every turn.
 
-## 组成
+## Composition
 
-- `index.js`（宿主端）：注册 `todo-continuation` settings 命名空间，监听
-  `agent/turn-stopping`，实现门禁与两条提示。零外部依赖，`schemastery` 在
-  `apply()` 里动态 import，失败降级为诊断日志。
-- `client.js`（浏览器端）：在设置页渲染「Todo 门禁」小节，编辑三个字段。
-- `cordis.patch.yml`：声明 `dsh-todo-continuation` 插件行。
-- `package.json`：`@doiiarx/dsh-todo-continuation` 包清单，声明 `dsh.client` 注入与
-  `schemastery` 依赖。
+- `index.js` (host): registers the `todo-continuation` settings namespace, listens
+  to `agent/turn-stopping`, and implements the gate plus both prompts. Zero external
+  dependencies; `schemastery` is imported dynamically in `apply()` and any failure
+  degrades to a diagnostic log.
+- `client.js` (browser): renders a "Todo gate" section in the settings page for
+  editing the three fields.
+- `cordis.patch.yml`: declares the `dsh-todo-continuation` plugin row.
+- `package.json`: the `@doiiarx/dsh-todo-continuation` manifest with the
+  `dsh.client` injection and the `schemastery` dependency.
 
-## 安装接线
+## Installation
 
-插件目录需要装依赖（宿主端在 `index.js` 里 `import('schemastery')`）：
+Install dependencies in the plugin directory (the host side `import('schemastery')`
+in `index.js`):
 
 ```sh
-cd <本插件目录>
+cd <this-plugin-directory>
 pnpm install
 ```
 
-### 1. 挂进 web profile
+### 1. Mount into the web profile
 
-在 `$HOME/.dsh/profiles/web/package.json`：
+In `$HOME/.dsh/profiles/web/package.json`:
 
 ```json
 {
   "dependencies": {
-    "@doiiarx/dsh-todo-continuation": "link:<本插件目录绝对路径>"
+    "@doiiarx/dsh-todo-continuation": "github:zhihus/dsh-todo-continuation-en"
   },
   "dsh": {
     "profile": {
@@ -61,39 +68,41 @@ pnpm install
 }
 ```
 
-然后在 profile 目录 `pnpm install`。
+Then run `pnpm install` in that profile directory.
 
-### 2. 把命名空间暴露给浏览器设置页
+### 2. Expose the namespace to the browser settings page
 
-浏览器的设置页要读到 `todo-continuation` 命名空间，必须把它加进宿主 apiproxy 的
-设置白名单 `WEB_SETTINGS_NAMESPACES`（`packages/host/apiproxy/src/api-proxy.ts`）：
-否则设置页会一直显示「正在读取配置…」（命名空间未暴露给客户端）。
+The browser settings page can only read the `todo-continuation` namespace if it is
+listed in the host apiproxy settings allowlist `WEB_SETTINGS_NAMESPACES`
+(`packages/host/apiproxy/src/api-proxy.ts`); otherwise the settings page keeps
+showing "Loading configuration…" (the namespace is not exposed to the client).
 
 ```ts
 const WEB_SETTINGS_NAMESPACES = [
   'agent-loop', 'shell', 'locale', 'permission', 'ui-conversation', 'ui-theme', 'web-search-deepseek',
-  // ...本地插件命名单...
+  // ...local-plugin namespaces...
   'todo-continuation',
 ] as const
 ```
 
-改完重 build apiproxy（`pnpm run build:lib:host`）并重启 web 进程。
+Then rebuild the apiproxy (`pnpm run build:lib:host`) and restart the web process.
 
-## 配置
+## Configuration
 
-在设置页「Todo 门禁」小节可编辑：
+Editable in the settings page's "Todo gate" section:
 
-| 字段 | 默认 | 含义 |
+| Field | Default | Meaning |
 | --- | --- | --- |
-| `waitingTodoPrefixes` | `信息不足：`、`要求用户确认：` | 未完成项以此开头时视为「等待用户」，允许结束 |
-| `noTodoPromptEveryNTurns` | 5 | 连续多少轮无 Todo 后提示开始使用 |
-| `staleTodoPromptEveryNTurns` | 20 | 已有 Todo 却连续多少轮不更新后提示保持最新 |
+| `waitingTodoPrefixes` | `[INFO_NEEDED]`, `[WAITING_USER]` | unfinished items with these prefixes count as "waiting for the user" and allow a stop |
+| `noTodoPromptEveryNTurns` | 5 | consecutive turns without a todo before prompting to start one |
+| `staleTodoPromptEveryNTurns` | 20 | consecutive turns without an update to an existing list before prompting to refresh it |
 
-## 说明
+## Notes
 
-- 门禁消息来源为 `{ kind: 'plugin', plugin: 'todo-continuation' }`，注入的
-  `user/message` 可从会话日志重建。
-- 用户的取消（`agent.cancel`）与终态 turn 错误在停止边界前中止，绝不会被门禁
-  覆盖——取消仍是「模型永远不完成时结束该 turn」的唯一逃生口。
-- 若同时以多行挂载本插件（如 base bundle + agent preset），会注册多个监听器并
-  可能在一个停止边界入队多条消息；每个组合只挂载一次。
+- The gate message source is `{ kind: 'plugin', plugin: 'todo-continuation' }`,
+  so the injected `user/message` is reconstructable from the session log.
+- The user's cancel (`agent.cancel`) and terminal turn errors abort before the
+  stop boundary and are never overridden — cancellation stays the escape hatch.
+- Mounting the plugin through multiple rows (e.g. base bundle plus an agent
+  preset) registers several listeners and can enqueue several messages at one
+  stop boundary; mount it once per composition.
