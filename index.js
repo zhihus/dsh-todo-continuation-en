@@ -75,9 +75,14 @@ function noTodoPromptMessage(everyNTurns) {
 }
 
 function staleTodoPromptMessage(everyNTurns) {
-  return `The todo list has not been updated for the last ${everyNTurns} turns. `
-    + 'Keep the `todo_write` list current as the work progresses: update statuses, add new actionable todos, '
-    + 'and complete finished items. A stale list does not reflect the remaining work.'
+  return `Automated note: the todo list has not been updated for the last ${everyNTurns} turns.
+
+Don't create or start new work because of this note. Check the current todo list in your context and do exactly one of the following:
+
+1. No list, empty, or all completed: remove it (if present) and continue with the user's request. Do not invent new items.
+2. Unfinished items remain: update only statuses that no longer match the real state. Do not add items not requested.
+
+If neither applies, ignore this note and continue with the user's actual request.`
 }
 
 /** Builds a flagged user message (without depending on @deepseek-ai/dsh-llm). */
