@@ -1,6 +1,6 @@
 # dsh-todo-continuation
 
-[简体中文](README.zh.md) | [English](README.md)
+[English](README.md) | [Русский](README.ru.md) | [简体中文](README.zh.md)
 
 A todo-backed turn-stop gate and prompt plugin for DeepSeek Harness (DSH). At the
 `agent/turn-stopping` boundary it reads the current turn's latest `todo/write`
@@ -86,6 +86,10 @@ const WEB_SETTINGS_NAMESPACES = [
 ```
 
 Then rebuild the apiproxy (`pnpm run build:lib:host`) and restart the web process.
+
+> **Note**: in the installed DSH v0.1.1-rc.2 (npm) the compiled apiproxy has no
+> hardcoded allowlist — it dynamically exposes all registered namespaces via
+> `settings.describe()`. Step 2 may not be needed.
 
 ## Configuration
 

@@ -1,6 +1,6 @@
 # dsh-todo-continuation
 
-[简体中文](README.zh.md) | [English](README.md)
+[English](README.md) | [Русский](README.ru.md) | [简体中文](README.zh.md)
 
 DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stopping` 边界依据
 当前 turn 的最新 `todo/write` 快照决定是否放行结束，并对「长期不用 Todo」和
