@@ -147,7 +147,8 @@ Contract:
   infrastructure is validated against the schema before persistence. An
   unknown placeholder such as `{foo}` is allowed and rendered verbatim.
 - Write the placeholder exactly as `{n}` — `{ n }` (with spaces) does not match
-  and is rejected; `{{n}}` passes and renders doubled (e.g. `{{5}}`).
+  and is rejected; `{{n}}` passes schema and renders through plain literal
+  substitution with no special handling (e.g. `{{n}}` renders as `{5}`).
 - When the interval is `0` (advisory disabled) the template is not used at all.
 - The defaults reproduce the pre-v0.3.0 hardcoded texts byte-for-byte; if you
   never edit a template, the sent messages are unchanged.
