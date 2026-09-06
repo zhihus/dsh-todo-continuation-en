@@ -4,8 +4,8 @@
 
 DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stopping` 边界依据
 当前 turn 的最新 `todo/write` 快照决定是否放行结束，并对「长期不用 Todo」和
-「长期不更新 Todo」给出建议性提示。两个间隔均可在 Web 设置页配置，保存后下一轮
-立即生效。
+「长期不更新 Todo」给出建议性提示。两个间隔和两条建议性提示的文本均可在 Web
+设置页配置，保存后下一轮立即生效。
 
 > 本插件属于 [dsh-plugins](https://github.com/DoiiarX/dsh-plugins) 合集，
 > 完整的自研插件索引见该仓库。
@@ -18,12 +18,12 @@ DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stoppi
    前缀开头的 todo 依然是未完成项，依然阻止结束。只有当当前 turn 快照中所有
    todo 都已完成时，才允许结束。
 2. **无 Todo 提示**（建议性）：连续 `noTodoPromptEveryNTurns` 轮没有任何 todo
-   快照时，提示模型用 `todo_write` 规划与跟踪工作。**默认 `0` = 关闭**——该
-   提示本身会推动模型创建 todo 列表，与「todo 仅用于多步工作」的策略相悖；
+   快照时，发送无 Todo advisory 模板（`{n}` 替换为间隔值）。**默认 `0` = 关闭**
+   ——该提示本身会推动模型创建 todo 列表，与「todo 仅用于多步工作」的策略相悖；
    需要时在设置页显式设置间隔。
 3. **过期 Todo 提示**（建议性）：已有 todo 列表却连续
-   `staleTodoPromptEveryNTurns`（默认 20）轮不更新时，提示模型保持列表最新。
-   `0` 关闭该提示。
+   `staleTodoPromptEveryNTurns`（默认 20）轮不更新时，发送过期 advisory 模板
+   （`{n}` 替换为间隔值）。`0` 关闭该提示。
 
 插件绝不创建、删除、完成或改写 Todo——列表的唯一作者仍是模型。两条提示都是
 建议性的（本身不阻止结束），且各自每间隔最多触发一次，避免每轮催促。
@@ -46,7 +46,8 @@ DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stoppi
 - `index.js`（宿主端）：注册 `todo-continuation` settings 命名空间，监听
   `agent/turn-stopping`，实现门禁与两条提示。零外部依赖，`schemastery` 在
   `apply()` 里动态 import，失败降级为诊断日志。
-- `client.js`（浏览器端）：在设置页渲染「Todo 门禁」小节，编辑两个间隔字段。
+- `client.js`（浏览器端）：在设置页渲染「Todo 门禁」小节，编辑两个间隔字段和
+  两个 advisory 提示模板。
 - `cordis.patch.yml`：声明 `dsh-todo-continuation` 插件行。
 - `package.json`：`@doiiarx/dsh-todo-continuation` 包清单，声明 `dsh.client`
   注入与 `schemastery` 依赖。
@@ -108,6 +109,33 @@ const WEB_SETTINGS_NAMESPACES = [
 | --- | --- | --- |
 | `noTodoPromptEveryNTurns` | 0 | 连续多少轮无 Todo 后提示开始使用；**0 = 关闭** |
 | `staleTodoPromptEveryNTurns` | 20 | 已有 Todo 却连续多少轮不更新后提示保持最新；0 = 关闭 |
+| `noTodoPromptTemplate` | 内置文本 | 无 Todo advisory 的文本；必须包含 `{n}` |
+| `staleTodoPromptTemplate` | 内置文本 | 过期 Todo advisory 的文本；必须包含 `{n}` |
+
+## 提示模板（占位符契约）
+
+模板有**两个**，每个 advisory 一个——两个事件携带相反的指令（「开始使用
+todo」vs「不要开始新工作，只刷新状态」），因此文本独立编辑。
+
+| 模板 | 占位符 | 替换值 | 必需 |
+| --- | --- | --- | --- |
+| `noTodoPromptTemplate` | `{n}` | 生效的 `noTodoPromptEveryNTurns` 间隔 | 是 |
+| `staleTodoPromptTemplate` | `{n}` | 生效的 `staleTodoPromptEveryNTurns` 间隔 | 是 |
+
+契约：
+
+- 替换是字面替换：`{n}` 的每一次出现都替换为间隔值（重复的 `{n}` 全部替换）。
+  不使用模板引擎。
+- **缺少 `{n}` 的模板无法保存。** 设置 schema 强制执行
+  （`Schema.string().pattern(/\{n\}/)`）：设置页预校验草稿，只写入有效的模板；
+  任何通过设置基础设施的写入都会在持久化之前经过 schema 校验。未知占位符
+  （如 `{foo}`）是允许的，会原样发送。
+- 占位符必须写作 `{n}`——`{ n }`（带空格）不匹配并被拒绝；`{{n}}` 可以通过，
+  渲染为双重括号（如 `{{5}}`）。
+- 间隔为 `0`（advisory 关闭）时完全不使用模板。
+- 默认值逐字节复现 v0.3.0 之前的硬编码文本；只要不编辑模板，发送的消息不变。
+- 如果手动编辑的 `settings.yaml` 中包含无效模板，命名空间注册会失败，插件降级
+  到全部内置默认值（包括间隔）并输出诊断日志——修复或删除该行以恢复用户覆盖。
 
 ### 升级说明（0.1.0 → 0.2.0）
 
@@ -119,6 +147,12 @@ const WEB_SETTINGS_NAMESPACES = [
   该行）以采用新行为。
 - 门禁不再识别等待前缀：只要存在未完成 todo，模型唯一的出路是完成它们，或
   通过 `ask_user_question` 提问。
+
+### 升级说明（0.2.0 → 0.3.0）
+
+- advisory 提示文本成为可编辑设置（`noTodoPromptTemplate`、
+  `staleTodoPromptTemplate`）。**无需迁移**：没有新键的配置会获得默认值，
+  这些默认值与 v0.2.0 的文本完全一致。
 
 ## 说明
 

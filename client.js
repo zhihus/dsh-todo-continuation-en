@@ -3,9 +3,10 @@
  * Same loading pattern as the client.js of @doiiarx/dsh-user-language:
  * `window.__ModuleLoader__.load` registers the browser-side plugin, binds the
  * `todo-continuation` settings namespace, and renders two editable interval
- * fields in the settings page (`0` disables the advisory). After saving, the
- * host side applies the new values on the next turn-stopping, no restart
- * needed.
+ * fields plus two editable advisory prompt templates (`0` disables an advisory;
+ * a template must contain the required `{n}` placeholder, so an invalid draft
+ * is never written). After saving, the host side applies the new values on the
+ * next turn-stopping, no restart needed.
  */
 window.__ModuleLoader__.load({
   id: "@doiiarx/dsh-todo-continuation",
@@ -17,9 +18,68 @@ window.__ModuleLoader__.load({
     const NAMESPACE = "todo-continuation";
     const DEFAULT_NO_TODO_EVERY = 0;
     const DEFAULT_STALE_EVERY = 20;
+    // Client-side fallbacks mirror the host defaults; the host always sends the
+    // schema-resolved values, so these only matter for defensive rendering.
+    const DEFAULT_NO_TODO_TEMPLATE = "No todo list has been created for the last {n} turns. For work that spans multiple steps or continues across turns, use the `todo_write` tool to plan and track it: create actionable todos, update their status as you finish, and complete the list before the work is done. A trivial single-step answer does not need a todo list.";
+    const DEFAULT_STALE_TEMPLATE = "Automated note: the todo list has not been updated for the last {n} turns.\n\nDon't create or start new work because of this note. Check the current todo list in your context and do exactly one of the following:\n\n1. No list, empty, or all completed: remove it (if present) and continue with the user's request. Do not invent new items.\n2. Unfinished items remain: update only statuses that no longer match the real state. Do not add items not requested.\n\nIf neither applies, ignore this note and continue with the user's actual request.";
+    const PLACEHOLDER_HINT = "Available placeholder: {n} = the effective interval of this advisory. The required {n} cannot be removed (an invalid template is not saved); unknown placeholders are sent as-is. Write it exactly as {n}, without spaces inside the braces.";
 
     function intervalValue(value, fallback) {
       return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+    }
+
+    function templateValue(value, fallback) {
+      return typeof value === "string" && value.includes("{n}") ? value : fallback;
+    }
+
+    const cardStyle = {
+      display: "grid", gap: "8px", padding: "18px",
+      border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "14px",
+      background: "var(--dsw-alias-bg-layer-1)",
+    };
+    const hintStyle = { color: "var(--dsw-alias-label-tertiary)" };
+    const errorStyle = { color: "#c62828" };
+
+    /** Advisory template textarea: local draft, valid drafts save on blur, invalid drafts show an inline error and never write. */
+    function TemplateField({ scope, writable, label, desc, field, savedValue, rows }) {
+      const [draft, setDraft] = React.useState(savedValue);
+      const [touched, setTouched] = React.useState(false);
+      // Follow external value changes (e.g. the recovery read after a rejected
+      // write), but never clobber a draft the user is currently editing.
+      React.useEffect(() => {
+        if (!touched) setDraft(savedValue);
+      }, [savedValue, touched]);
+      const valid = typeof draft === "string" && draft.includes("{n}");
+      const modified = draft !== savedValue;
+      return h("label", { "data-settings-item": field, style: cardStyle },
+        h("strong", null, label),
+        h("small", { style: hintStyle }, desc),
+        h("textarea", {
+          rows,
+          value: draft,
+          disabled: !writable,
+          spellCheck: false,
+          style: {
+            width: "100%", padding: "10px 11px", resize: "vertical", lineHeight: "1.5",
+            border: "1px solid " + (valid ? "var(--dsw-alias-border-l2)" : "#c62828"), borderRadius: "10px",
+            color: "var(--dsw-alias-label-primary)", background: "var(--dsw-specific-input-major)",
+            font: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", fontSize: "12.5px",
+          },
+          onChange: (event) => {
+            setDraft(event.target.value);
+            setTouched(true);
+          },
+          onBlur: () => {
+            if (valid && draft !== savedValue) void scope.set(field, draft);
+          },
+        }),
+        !valid
+          ? h("small", { style: errorStyle }, "Template must contain the required placeholder {n} — it will not be saved until the placeholder is restored.")
+          : (modified
+            ? h("small", { style: hintStyle }, "Valid — saved when you leave the field.")
+            : null),
+        h("small", { style: hintStyle }, PLACEHOLDER_HINT),
+      );
     }
 
     function TodoContinuationSettings({ scope }) {
@@ -32,18 +92,16 @@ window.__ModuleLoader__.load({
       const current = {
         noTodo: intervalValue(value?.noTodoPromptEveryNTurns, DEFAULT_NO_TODO_EVERY),
         stale: intervalValue(value?.staleTodoPromptEveryNTurns, DEFAULT_STALE_EVERY),
+        noTodoTemplate: templateValue(value?.noTodoPromptTemplate, DEFAULT_NO_TODO_TEMPLATE),
+        staleTemplate: templateValue(value?.staleTodoPromptTemplate, DEFAULT_STALE_TEMPLATE),
       };
 
       const numberField = (label, desc, field, currentValue) => h("label", {
         "data-settings-item": field,
-        style: {
-          display: "grid", gap: "8px", padding: "18px",
-          border: "1px solid var(--dsw-alias-border-l2)", borderRadius: "14px",
-          background: "var(--dsw-alias-bg-layer-1)",
-        },
+        style: cardStyle,
       },
         h("strong", null, label),
-        h("small", { style: { color: "var(--dsw-alias-label-tertiary)" } }, desc),
+        h("small", { style: hintStyle }, desc),
         h("input", {
           type: "number", min: 0, step: 1,
           value: currentValue,
@@ -65,12 +123,26 @@ window.__ModuleLoader__.load({
         h("div", null,
           h("h2", { style: { margin: "0 0 6px" } }, "Todo Gate"),
           h("p", { style: { margin: 0, color: "var(--dsw-alias-label-secondary)" } },
-            "The turn cannot stop while unfinished todos remain. The two intervals below are advisory prompts; set 0 to disable one.")
+            "The turn cannot stop while unfinished todos remain. The two intervals are advisory prompts; set 0 to disable one. Each advisory's text is an editable template with the required {n} placeholder.")
         ),
         busy ? h("p", { style: { color: "var(--dsw-alias-label-secondary)" } }, "Loading configuration…")
           : h(React.Fragment, null,
             numberField("No-todo prompt interval", "After how many consecutive turns without any todo, prompt the model to start managing tasks with todos. 0 = disabled.", "noTodoPromptEveryNTurns", current.noTodo),
+            h(TemplateField, {
+              scope, writable: snapshot.writable, rows: 5,
+              label: "No-todo prompt template",
+              desc: "Text of the advisory sent after N consecutive turns without any todo.",
+              field: "noTodoPromptTemplate",
+              savedValue: current.noTodoTemplate,
+            }),
             numberField("Stale-todo prompt interval", "When a todo list exists but is not updated for this many consecutive turns, prompt the model to keep the list current. 0 = disabled.", "staleTodoPromptEveryNTurns", current.stale),
+            h(TemplateField, {
+              scope, writable: snapshot.writable, rows: 10,
+              label: "Stale-todo prompt template",
+              desc: "Text of the advisory sent when an existing todo list is not updated for N consecutive turns.",
+              field: "staleTodoPromptTemplate",
+              savedValue: current.staleTemplate,
+            }),
           ),
       );
     }
@@ -95,10 +167,12 @@ window.__ModuleLoader__.load({
       });
       search.register(NAMESPACE, {
         label: "Todo Gate",
-        keywords: "todo gate prompt stale update interval disable",
+        keywords: "todo gate prompt stale update interval disable template",
         items: [
           { id: "noTodoPromptEveryNTurns", label: "No-todo prompt interval", desc: "Prompt after turns without any todo; 0 = disabled", keywords: "todo gate no-todo prompt interval disabled" },
           { id: "staleTodoPromptEveryNTurns", label: "Stale-todo prompt interval", desc: "Prompt when the todo list is not updated; 0 = disabled", keywords: "todo gate stale update prompt interval disabled" },
+          { id: "noTodoPromptTemplate", label: "No-todo prompt template", desc: "Advisory text when no todo list exists; requires {n}", keywords: "todo gate no-todo prompt template text message placeholder" },
+          { id: "staleTodoPromptTemplate", label: "Stale-todo prompt template", desc: "Advisory text when the todo list is not updated; requires {n}", keywords: "todo gate stale update prompt template text message placeholder" },
         ],
       });
     }
