@@ -118,7 +118,10 @@ web-процесс.
 
 ## Конфигурация
 
-Редактируется в секции «Todo Gate» на странице настроек:
+Редактируется в секции «Todo Gate» на странице настроек. В интерфейсе каждый
+advisory — это пара полей (интервал + текст подсказки), подписанная по условию
+срабатывания: **«If there is no todo list»** (ключи `noTodoPrompt*`) и **«If the
+todo list is not updated»** (ключи `staleTodoPrompt*`):
 
 | Поле | По умолчанию | Значение |
 | --- | --- | --- |
@@ -178,6 +181,15 @@ web-процесс.
   (`noTodoPromptTemplate`, `staleTodoPromptTemplate`). **Мигрировать ничего не
   нужно**: конфигурации без новых ключей получают дефолты, которые побайтово
   воспроизводят тексты v0.2.0.
+
+### Заметки для обновления (0.3.0 → 0.3.1)
+
+- Подписи на странице настроек переименованы в сторону условия срабатывания:
+  «No-todo prompt interval/template» → «If there is no todo list: interval
+  (turns) / prompt text»; «Stale-todo prompt interval/template» → «If the todo
+  list is not updated: interval (turns) / prompt text». **Изменение только
+  в интерфейсе**: ключи конфигурации, дефолты и schema не тронуты — мигрировать
+  ничего не нужно.
 
 ## Примечания
 

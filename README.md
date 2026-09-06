@@ -117,7 +117,10 @@ Then rebuild the apiproxy (`pnpm run build:lib:host`) and restart the web proces
 
 ## Configuration
 
-Editable in the settings page's "Todo Gate" section:
+Editable in the settings page's "Todo Gate" section. In the UI, each advisory is
+a pair of fields (interval + prompt text) labeled by its trigger condition:
+**"If there is no todo list"** (keys `noTodoPrompt*`) and **"If the todo list is
+not updated"** (keys `staleTodoPrompt*`):
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -175,6 +178,14 @@ Contract:
 - Advisory prompt texts became editable settings (`noTodoPromptTemplate`,
   `staleTodoPromptTemplate`). **Nothing to migrate**: configs without the new
   keys get the defaults, which reproduce the v0.2.0 texts exactly.
+
+### Upgrade notes (0.3.0 → 0.3.1)
+
+- Settings-page labels renamed to trigger-condition wording: "No-todo prompt
+  interval/template" → "If there is no todo list: interval (turns) / prompt
+  text"; "Stale-todo prompt interval/template" → "If the todo list is not
+  updated: interval (turns) / prompt text". **UI-only change**: configuration
+  keys, defaults, and the schema are unchanged — nothing to migrate.
 
 ## Notes
 

@@ -1,6 +1,6 @@
 {
   "name": "@doiiarx/dsh-todo-continuation",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Todo-backed turn-stop gate and prompt plugin for DeepSeek Harness: blocks stop on unfinished work and prompts on no-todo or stale-todo streaks, configurable in the settings page.",
   "type": "module",

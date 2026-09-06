@@ -103,7 +103,9 @@ const WEB_SETTINGS_NAMESPACES = [
 
 ## 配置
 
-在设置页「Todo 门禁」小节可编辑：
+在设置页「Todo 门禁」小节可编辑。界面中每条 advisory 是一组字段（间隔 + 提示
+文本），按触发条件命名：**「If there is no todo list」**（键 `noTodoPrompt*`）
+与 **「If the todo list is not updated」**（键 `staleTodoPrompt*`）：
 
 | 字段 | 默认 | 含义 |
 | --- | --- | --- |
@@ -153,6 +155,14 @@ todo」vs「不要开始新工作，只刷新状态」），因此文本独立�
 - advisory 提示文本成为可编辑设置（`noTodoPromptTemplate`、
   `staleTodoPromptTemplate`）。**无需迁移**：没有新键的配置会获得默认值，
   这些默认值与 v0.2.0 的文本完全一致。
+
+### 升级说明（0.3.0 → 0.3.1）
+
+- 设置页标签改为按触发条件命名：「No-todo prompt interval/template」→
+  「If there is no todo list: interval (turns) / prompt text」；
+  「Stale-todo prompt interval/template」→「If the todo list is not updated:
+  interval (turns) / prompt text」。**仅界面变更**：配置键、默认值与 schema
+  均未改动——无需迁移。
 
 ## 说明
 
