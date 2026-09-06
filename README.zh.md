@@ -164,6 +164,21 @@ todo」vs「不要开始新工作，只刷新状态」），因此文本独立�
   interval (turns) / prompt text」。**仅界面变更**：配置键、默认值与 schema
   均未改动——无需迁移。
 
+## 发布策略
+
+从**下一个**版本起，每个发布都会打标签：
+
+1. 提升 `package.json` 的 `version`（semver：仅界面/文档变更 → patch，新增
+   设置或行为变更 → minor）。
+2. 以 `release:` 前缀提交，并附简短说明。
+3. 在发布提交上打附注标签并显式推送：`git tag -a vX.Y.Z -m "vX.Y.Z: summary"`，
+   然后 `git push en vX.Y.Z`——单独的 `git push` 不会推送标签。
+4. 标签将发布固定为可安装的 ref
+   （`github:zhihus/dsh-todo-continuation-en#vX.Y.Z`），并显示在 GitHub
+   Releases 页面。
+
+v0.3.1 及更早的版本只在 `package.json` 中记录版本，没有标签。
+
 ## 说明
 
 - 门禁消息来源为 `{ kind: 'plugin', plugin: 'todo-continuation' }`，注入的

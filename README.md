@@ -187,6 +187,23 @@ Contract:
   updated: interval (turns) / prompt text". **UI-only change**: configuration
   keys, defaults, and the schema are unchanged — nothing to migrate.
 
+## Release policy
+
+Starting with the **next** release, every release is tagged:
+
+1. Bump `version` in `package.json` (semver: UI/docs-only changes → patch, new
+   settings or behavior changes → minor).
+2. Commit with a `release:`-prefixed message summarizing the change.
+3. Put an annotated tag on the release commit and push it explicitly:
+   `git tag -a vX.Y.Z -m "vX.Y.Z: summary"`, then `git push en vX.Y.Z` —
+   `git push` alone never transfers tags.
+4. The tag pins the release to an installable ref
+   (`github:zhihus/dsh-todo-continuation-en#vX.Y.Z`) and lists it on the
+   GitHub Releases page.
+
+Releases up to and including v0.3.1 are versioned only in `package.json` and
+carry no tags.
+
 ## Notes
 
 - The gate message source is `{ kind: 'plugin', plugin: 'todo-continuation' }`,
