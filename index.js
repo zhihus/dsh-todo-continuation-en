@@ -3,19 +3,20 @@
  *
  * Two-sided package (same working pattern as @doiiarx/dsh-user-language):
  *   - Host side (this file): registers the `todo-continuation` settings namespace
- *     (`waitingTodoPrefixes` / `noTodoPromptEveryNTurns` /
- *     `staleTodoPromptEveryNTurns`), listens for `agent/turn-stopping`, and
- *     implements:
- *       1) Stop gate: keeps the turn going when it has unfinished, non
- *          "waiting-for-user" todos;
+ *     (`noTodoPromptEveryNTurns` / `staleTodoPromptEveryNTurns`), listens for
+ *     `agent/turn-stopping`, and implements:
+ *       1) Stop gate: keeps the turn going while the current turn's latest
+ *          todo/write snapshot contains unfinished todos. There are no prefix
+ *          exceptions — a stop is allowed only when every todo is completed
+ *          (v0.2.0 removed the marker-based waiting protocol).
  *       2) No-todo prompt: after N consecutive turns without any todo snapshot,
- *          reminds the model to start using todos;
+ *          reminds the model to start using todos (`0` disables).
  *       3) Stale-todo prompt: when todos exist but go M consecutive turns
- *          without an update, reminds the model to keep them current.
- *     All three thresholds are read live from settings, so a change in the
- *     settings page takes effect on the next turn.
+ *          without an update, reminds the model to keep them current (`0` disables).
+ *     All thresholds are read live from settings, so a change in the settings
+ *     page takes effect on the next turn.
  *   - Browser side (client.js): renders a "Todo Gate" section in the settings
- *     page for editing the three fields.
+ *     page for editing the two interval fields.
  *
  * Failure isolation (same as user-language): this file keeps zero external
  * dependencies; schemastery is imported dynamically in apply() and any failure
@@ -27,8 +28,7 @@ export const inject = ['settings']
 
 const SETTINGS_NS = 'todo-continuation'
 const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'todo-continuation' }
-const DEFAULT_WAITING_PREFIXES = ['[INFO_NEEDED]', '[WAITING_USER]']
-const DEFAULT_NO_TODO_EVERY = 5
+const DEFAULT_NO_TODO_EVERY = 0
 const DEFAULT_STALE_EVERY = 20
 
 function report(ctx, scope, error) {
@@ -54,17 +54,10 @@ function currentTurnTodos(session, turn) {
   return latest
 }
 
-function isWaitingTodo(todo, prefixes) {
-  return prefixes.some(prefix => todo.content?.startsWith(prefix))
-}
-
-function continuationMessage(prefixes) {
-  const markers = prefixes.map(prefix => JSON.stringify(`${prefix}...`)).join(', ')
-  return 'The current todo list still contains unfinished work, so this turn cannot stop. '
-    + 'Continue executing the remaining actionable todos now; do not only summarize progress or describe future work. '
-    + 'Update the complete todo list with `todo_write` as work finishes. '
-    + `A stop is allowed only after every todo is completed, or when every remaining unfinished todo starts with one of these user-wait markers: ${markers}. `
-    + 'Do not use a waiting todo for work you can complete with the available context and tools.'
+function continuationMessage() {
+  return 'You cannot stop this turn while unfinished todos remain. '
+    + 'Continue working and complete every unfinished todo, updating the list with `todo_write` as work finishes. '
+    + 'If further progress requires user input, call `ask_user_question` instead of ending the turn.'
 }
 
 function noTodoPromptMessage(everyNTurns) {
@@ -95,19 +88,18 @@ function steerMessage(text) {
   }
 }
 
-/** Reads and normalizes the three config values from settings. */
+/** Reads one interval setting; `0` is a valid "disabled" value, anything invalid falls back. */
+function readDisabledableNumber(value, fallback) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback
+}
+
+/** Reads and normalizes the config values from settings. */
 function readConfig(scope) {
   const value = scope?.get?.() ?? {}
-  const prefixes = Array.isArray(value.waitingTodoPrefixes) && value.waitingTodoPrefixes.length > 0
-    ? value.waitingTodoPrefixes.map(prefix => String(prefix))
-    : [...DEFAULT_WAITING_PREFIXES]
-  const noTodoEvery = Number.isSafeInteger(value.noTodoPromptEveryNTurns) && value.noTodoPromptEveryNTurns >= 1
-    ? value.noTodoPromptEveryNTurns
-    : DEFAULT_NO_TODO_EVERY
-  const staleEvery = Number.isSafeInteger(value.staleTodoPromptEveryNTurns) && value.staleTodoPromptEveryNTurns >= 1
-    ? value.staleTodoPromptEveryNTurns
-    : DEFAULT_STALE_EVERY
-  return { prefixes, noTodoEvery, staleEvery }
+  return {
+    noTodoEvery: readDisabledableNumber(value.noTodoPromptEveryNTurns, DEFAULT_NO_TODO_EVERY),
+    staleEvery: readDisabledableNumber(value.staleTodoPromptEveryNTurns, DEFAULT_STALE_EVERY),
+  }
 }
 
 export async function apply(ctx, config = {}) {
@@ -117,12 +109,10 @@ export async function apply(ctx, config = {}) {
   try {
     const { default: Schema } = await import('schemastery')
     const base = {
-      waitingTodoPrefixes: config.waitingTodoPrefixes ?? DEFAULT_WAITING_PREFIXES,
       noTodoPromptEveryNTurns: config.noTodoPromptEveryNTurns ?? DEFAULT_NO_TODO_EVERY,
       staleTodoPromptEveryNTurns: config.staleTodoPromptEveryNTurns ?? DEFAULT_STALE_EVERY,
     }
     scope = ctx.settings.register(SETTINGS_NS, Schema.object({
-      waitingTodoPrefixes: Schema.array(Schema.string()).default(base.waitingTodoPrefixes),
       noTodoPromptEveryNTurns: Schema.number().default(base.noTodoPromptEveryNTurns),
       staleTodoPromptEveryNTurns: Schema.number().default(base.staleTodoPromptEveryNTurns),
     }), { base })
@@ -144,37 +134,44 @@ export async function apply(ctx, config = {}) {
     const cfg = readConfig(scope)
     const todos = currentTurnTodos(agent.session, turn)
     if (todos !== undefined) {
-      // Todos written this turn: reset both counters and record the latest write turn.
+      // Todos written this turn: reset both counters and gate the stop.
       const state = states.get(agent.session.id) ?? emptyState()
       state.noTodoCount = 0
       state.staleCount = 0
       state.lastTodoWriteTurn = turn
       states.set(agent.session.id, state)
       const unfinished = todos.filter(todo => todo.status !== 'completed')
-      if (unfinished.length === 0 || unfinished.every(todo => isWaitingTodo(todo, cfg.prefixes))) return
-      agent.steer(steerMessage(continuationMessage(cfg.prefixes)))
+      if (unfinished.length === 0) return
+      // Hard gate: no prefix exceptions and no per-turn dedup. Every blocked
+      // stop attempt gets a continuation steer, so the turn never ends with
+      // open todos while the gate sees them.
+      agent.steer(steerMessage(continuationMessage()))
       return
     }
     const state = states.get(agent.session.id) ?? emptyState()
     if (state.lastCountedTurn === turn) return
     state.lastCountedTurn = turn
     if (state.lastTodoWriteTurn === 0) {
-      // No list yet: accumulate the "no todo" turn count.
-      state.noTodoCount += 1
-      if (state.noTodoCount >= cfg.noTodoEvery
-        && (state.lastNoTodoPromptTurn === 0 || turn - state.lastNoTodoPromptTurn > cfg.noTodoEvery)) {
-        agent.steer(steerMessage(noTodoPromptMessage(cfg.noTodoEvery)))
-        state.lastNoTodoPromptTurn = turn
-        state.noTodoCount = 0
+      // No list yet: accumulate the "no todo" turn count (0 disables the advisory).
+      if (cfg.noTodoEvery > 0) {
+        state.noTodoCount += 1
+        if (state.noTodoCount >= cfg.noTodoEvery
+          && (state.lastNoTodoPromptTurn === 0 || turn - state.lastNoTodoPromptTurn > cfg.noTodoEvery)) {
+          agent.steer(steerMessage(noTodoPromptMessage(cfg.noTodoEvery)))
+          state.lastNoTodoPromptTurn = turn
+          state.noTodoCount = 0
+        }
       }
     } else {
-      // List exists but nothing written this turn: accumulate the "stale" turn count.
-      state.staleCount += 1
-      if (state.staleCount >= cfg.staleEvery
-        && (state.lastStalePromptTurn === 0 || turn - state.lastStalePromptTurn > cfg.staleEvery)) {
-        agent.steer(steerMessage(staleTodoPromptMessage(cfg.staleEvery)))
-        state.lastStalePromptTurn = turn
-        state.staleCount = 0
+      // List exists but nothing written this turn: accumulate the "stale" turn count (0 disables the advisory).
+      if (cfg.staleEvery > 0) {
+        state.staleCount += 1
+        if (state.staleCount >= cfg.staleEvery
+          && (state.lastStalePromptTurn === 0 || turn - state.lastStalePromptTurn > cfg.staleEvery)) {
+          agent.steer(steerMessage(staleTodoPromptMessage(cfg.staleEvery)))
+          state.lastStalePromptTurn = turn
+          state.staleCount = 0
+        }
       }
     }
     states.set(agent.session.id, state)

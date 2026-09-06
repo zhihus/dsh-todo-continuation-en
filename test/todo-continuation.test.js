@@ -60,32 +60,37 @@ test('registers turn-stopping and session-disposed listeners', async () => {
   assert.equal(typeof handlers['session/disposed'], 'function')
 })
 
-test('default waiting prefixes are the English markers', async () => {
-  const { gate } = await setup()
-  const agent = makeAgent(1, [{ content: '[INFO_NEEDED] get details', status: 'pending' }])
-  gate(agent, 1)
-  assert.equal(agent.steered.length, 0, 'a todo starting with a waiting marker must allow a stop')
-})
-
-test('blocks stop when an unfinished todo has no waiting marker', async () => {
+test('blocks stop when a todo is unfinished', async () => {
   const { gate } = await setup()
   const agent = makeAgent(1, [{ content: 'Implement the feature', status: 'pending' }])
   gate(agent, 1)
   assert.equal(agent.steered.length, 1)
   const text = agent.steered[0].content[0].text
   assert.match(text, /cannot stop/)
-  assert.match(text, /\[INFO_NEEDED\]/)
-  assert.match(text, /\[WAITING_USER\]/)
+  assert.match(text, /todo_write/)
+  assert.match(text, /ask_user_question/)
 })
 
-test('allows stop when every unfinished todo starts with a waiting marker', async () => {
+test('continuation message carries no waiting markers', async () => {
   const { gate } = await setup()
-  const agent = makeAgent(1, [
-    { content: '[INFO_NEEDED] ask for the API key', status: 'pending' },
-    { content: '[WAITING_USER] confirm the plan', status: 'pending' },
-  ])
+  const agent = makeAgent(1, [{ content: 'Implement the feature', status: 'pending' }])
   gate(agent, 1)
-  assert.equal(agent.steered.length, 0)
+  const text = agent.steered[0].content[0].text
+  assert.doesNotMatch(text, /INFO_NEEDED|WAITING_USER/)
+})
+
+test('blocks stop even when a todo starts with the legacy [WAITING_USER] marker', async () => {
+  const { gate } = await setup()
+  const agent = makeAgent(1, [{ content: '[WAITING_USER] confirm the plan', status: 'pending' }])
+  gate(agent, 1)
+  assert.equal(agent.steered.length, 1)
+})
+
+test('blocks stop even when a todo starts with the legacy [INFO_NEEDED] marker', async () => {
+  const { gate } = await setup()
+  const agent = makeAgent(1, [{ content: '[INFO_NEEDED] get details', status: 'pending' }])
+  gate(agent, 1)
+  assert.equal(agent.steered.length, 1)
 })
 
 test('allows stop when all todos are completed', async () => {
@@ -95,15 +100,36 @@ test('allows stop when all todos are completed', async () => {
   assert.equal(agent.steered.length, 0)
 })
 
-test('respects custom prefixes from the settings scope', async () => {
+test('ignores the legacy waitingTodoPrefixes setting and still blocks', async () => {
   const { gate } = await setup({ scopeValue: { waitingTodoPrefixes: ['[NEED_USER]'] } })
   const agent = makeAgent(1, [{ content: '[NEED_USER] waiting for input', status: 'pending' }])
   gate(agent, 1)
-  assert.equal(agent.steered.length, 0)
+  assert.equal(agent.steered.length, 1)
 })
 
-test('prompts to start using todos after N turns without any todo', async () => {
+test('steers on every repeated stop event in the same turn (no dedup)', async () => {
   const { gate } = await setup()
+  const todos = [{ content: 'Implement the feature', status: 'pending' }]
+  const agent = makeAgent(1, todos)
+  gate(agent, 1)
+  gate(agent, 1)
+  assert.equal(agent.steered.length, 2)
+})
+
+test('allows stop after the todo list is completed in the same turn', async () => {
+  const { gate } = await setup()
+  const agent = makeAgent(1, [{ content: 'Implement the feature', status: 'pending' }])
+  gate(agent, 1)
+  agent.session.events.push({
+    type: 'todo/write',
+    data: { todos: [{ content: 'Implement the feature', status: 'completed' }] },
+  })
+  gate(agent, 1)
+  assert.equal(agent.steered.length, 1)
+})
+
+test('no-todo advisory fires after N turns when explicitly enabled', async () => {
+  const { gate } = await setup({ scopeValue: { noTodoPromptEveryNTurns: 5 } })
   let agent
   for (let turn = 1; turn <= 5; turn++) {
     agent = makeAgent(turn)
@@ -113,8 +139,8 @@ test('prompts to start using todos after N turns without any todo', async () => 
   assert.match(agent.steered[0].content[0].text, /No todo list has been created/)
 })
 
-test('does not re-prompt for the no-todo case within the same interval', async () => {
-  const { gate } = await setup()
+test('no-todo advisory does not re-fire within the same interval', async () => {
+  const { gate } = await setup({ scopeValue: { noTodoPromptEveryNTurns: 5 } })
   let agent
   for (let turn = 1; turn <= 10; turn++) {
     agent = makeAgent(turn)
@@ -124,7 +150,17 @@ test('does not re-prompt for the no-todo case within the same interval', async (
   assert.equal(agent.steered.length, 0)
 })
 
-test('prompts to refresh a stale todo list after N turns without an update', async () => {
+test('noTodoPromptEveryNTurns = 0 disables the no-todo advisory', async () => {
+  const { gate } = await setup({ scopeValue: { noTodoPromptEveryNTurns: 0 } })
+  let agent
+  for (let turn = 1; turn <= 25; turn++) {
+    agent = makeAgent(turn)
+    gate(agent, turn)
+  }
+  assert.equal(agent.steered.length, 0)
+})
+
+test('stale advisory fires after N turns without an update (default 20)', async () => {
   const { gate } = await setup()
   let agent = makeAgent(1, [{ content: 'Tracked task', status: 'completed' }])
   gate(agent, 1)
@@ -134,4 +170,15 @@ test('prompts to refresh a stale todo list after N turns without an update', asy
   }
   assert.equal(agent.steered.length, 1)
   assert.match(agent.steered[0].content[0].text, /has not been updated/)
+})
+
+test('staleTodoPromptEveryNTurns = 0 disables the stale advisory', async () => {
+  const { gate } = await setup({ scopeValue: { staleTodoPromptEveryNTurns: 0 } })
+  let agent = makeAgent(1, [{ content: 'Tracked task', status: 'completed' }])
+  gate(agent, 1)
+  for (let turn = 2; turn <= 25; turn++) {
+    agent = makeAgent(turn)
+    gate(agent, turn)
+  }
+  assert.equal(agent.steered.length, 0)
 })
