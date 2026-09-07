@@ -3,25 +3,25 @@
  *
  * Two-sided package (same working pattern as @doiiarx/dsh-user-language):
  *   - Host side (this file): registers the `todo-continuation` settings namespace
- *     (`noTodoPromptEveryNTurns` / `staleTodoPromptEveryNTurns` intervals plus
- *     the `noTodoPromptTemplate` / `staleTodoPromptTemplate` advisory texts),
- *     listens for `agent/turn-stopping`, and implements:
+ *     (`staleTodoPromptEveryNTurns` interval plus the `staleTodoPromptTemplate`
+ *     advisory text), listens for `agent/turn-stopping`, and implements:
  *       1) Stop gate: keeps the turn going while the current turn's latest
  *          todo/write snapshot contains unfinished todos. There are no prefix
  *          exceptions — a stop is allowed only when every todo is completed
  *          (v0.2.0 removed the marker-based waiting protocol).
- *       2) No-todo prompt: after N consecutive turns without any todo snapshot,
- *          sends the no-todo advisory template with `{n}` = N (`0` disables).
- *       3) Stale-todo prompt: when todos exist but go M consecutive turns
- *          without an update, sends the stale-todo advisory template with
- *          `{n}` = M (`0` disables).
+ *       2) Stale-todo prompt: when a todo list exists (the model has written
+ *          todos at least once) but goes M consecutive turns without an update,
+ *          sends the stale-todo advisory template with `{n}` = M (`0` disables).
+ *     The model alone decides whether to plan with todos: the plugin never
+ *     prompts a session that has never written todos (v0.4.0 removed the
+ *     no-todo advisory).
  *     All thresholds and templates are read live from settings, so a change in
  *     the settings page takes effect on the next turn. A template must contain
  *     the required `{n}` placeholder (schema-enforced: a template without it is
  *     rejected before it can be persisted); unknown placeholders are rendered
  *     verbatim.
  *   - Browser side (client.js): renders a "Todo Gate" section in the settings
- *     page for editing the two interval fields and the two prompt templates.
+ *     page for editing the interval field and the prompt template.
  *
  * Failure isolation (same as user-language): this file keeps zero external
  * dependencies; schemastery is imported dynamically in apply() and any failure
@@ -33,14 +33,9 @@ export const inject = ['settings']
 
 const SETTINGS_NS = 'todo-continuation'
 const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'todo-continuation' }
-const DEFAULT_NO_TODO_EVERY = 0
 const DEFAULT_STALE_EVERY = 20
-// Built-in defaults reproduce the v0.2.0 hardcoded advisory texts byte-for-byte
+// Built-in default reproduces the v0.2.0 hardcoded advisory text byte-for-byte
 // (only the interval moved into the `{n}` placeholder).
-const DEFAULT_NO_TODO_TEMPLATE = 'No todo list has been created for the last {n} turns. '
-  + 'For work that spans multiple steps or continues across turns, use the `todo_write` tool to plan and track it: '
-  + 'create actionable todos, update their status as you finish, and complete the list before the work is done. '
-  + 'A trivial single-step answer does not need a todo list.'
 const DEFAULT_STALE_TEMPLATE = `Automated note: the todo list has not been updated for the last {n} turns.
 
 Don't create or start new work because of this note. Check the current todo list in your context and do exactly one of the following:
@@ -108,9 +103,7 @@ function readTemplate(value, fallback) {
 function readConfig(scope) {
   const value = scope?.get?.() ?? {}
   return {
-    noTodoEvery: readDisabledableNumber(value.noTodoPromptEveryNTurns, DEFAULT_NO_TODO_EVERY),
     staleEvery: readDisabledableNumber(value.staleTodoPromptEveryNTurns, DEFAULT_STALE_EVERY),
-    noTodoTemplate: readTemplate(value.noTodoPromptTemplate, DEFAULT_NO_TODO_TEMPLATE),
     staleTemplate: readTemplate(value.staleTodoPromptTemplate, DEFAULT_STALE_TEMPLATE),
   }
 }
@@ -124,15 +117,11 @@ export async function apply(ctx, config = {}) {
   try {
     const { default: Schema } = await import('schemastery')
     const base = {
-      noTodoPromptEveryNTurns: config.noTodoPromptEveryNTurns ?? DEFAULT_NO_TODO_EVERY,
       staleTodoPromptEveryNTurns: config.staleTodoPromptEveryNTurns ?? DEFAULT_STALE_EVERY,
-      noTodoPromptTemplate: config.noTodoPromptTemplate ?? DEFAULT_NO_TODO_TEMPLATE,
       staleTodoPromptTemplate: config.staleTodoPromptTemplate ?? DEFAULT_STALE_TEMPLATE,
     }
     scope = ctx.settings.register(SETTINGS_NS, Schema.object({
-      noTodoPromptEveryNTurns: Schema.number().default(base.noTodoPromptEveryNTurns),
       staleTodoPromptEveryNTurns: Schema.number().default(base.staleTodoPromptEveryNTurns),
-      noTodoPromptTemplate: Schema.string().default(base.noTodoPromptTemplate).pattern(/\{n\}/),
       staleTodoPromptTemplate: Schema.string().default(base.staleTodoPromptTemplate).pattern(/\{n\}/),
     }), { base })
     console.log('[todo-continuation] settings namespace registered OK, scope =', scope !== undefined)
@@ -141,7 +130,7 @@ export async function apply(ctx, config = {}) {
     scope = null
   }
 
-  // 2) Per-session prompt state (turn dedup + two independent counters + per-counter cooldown).
+  // 2) Per-session prompt state (turn dedup + stale counter + stale cooldown).
   const states = new Map()
 
   ctx.on('session/disposed', (session) => {
@@ -153,9 +142,8 @@ export async function apply(ctx, config = {}) {
     const cfg = readConfig(scope)
     const todos = currentTurnTodos(agent.session, turn)
     if (todos !== undefined) {
-      // Todos written this turn: reset both counters and gate the stop.
+      // Todos written this turn: reset the stale counter and gate the stop.
       const state = states.get(agent.session.id) ?? emptyState()
-      state.noTodoCount = 0
       state.staleCount = 0
       state.lastTodoWriteTurn = turn
       states.set(agent.session.id, state)
@@ -171,26 +159,19 @@ export async function apply(ctx, config = {}) {
     if (state.lastCountedTurn === turn) return
     state.lastCountedTurn = turn
     if (state.lastTodoWriteTurn === 0) {
-      // No list yet: accumulate the "no todo" turn count (0 disables the advisory).
-      if (cfg.noTodoEvery > 0) {
-        state.noTodoCount += 1
-        if (state.noTodoCount >= cfg.noTodoEvery
-          && (state.lastNoTodoPromptTurn === 0 || turn - state.lastNoTodoPromptTurn > cfg.noTodoEvery)) {
-          agent.steer(steerMessage(renderTemplate(cfg.noTodoTemplate, cfg.noTodoEvery)))
-          state.lastNoTodoPromptTurn = turn
-          state.noTodoCount = 0
-        }
-      }
-    } else {
-      // List exists but nothing written this turn: accumulate the "stale" turn count (0 disables the advisory).
-      if (cfg.staleEvery > 0) {
-        state.staleCount += 1
-        if (state.staleCount >= cfg.staleEvery
-          && (state.lastStalePromptTurn === 0 || turn - state.lastStalePromptTurn > cfg.staleEvery)) {
-          agent.steer(steerMessage(renderTemplate(cfg.staleTemplate, cfg.staleEvery)))
-          state.lastStalePromptTurn = turn
-          state.staleCount = 0
-        }
+      // The model has never written todos in this session: the plugin does not
+      // decide whether one is needed, so no advisory fires (no-todo advisory
+      // removed in v0.4.0).
+      return
+    }
+    // List exists but nothing written this turn: accumulate the "stale" turn count (0 disables the advisory).
+    if (cfg.staleEvery > 0) {
+      state.staleCount += 1
+      if (state.staleCount >= cfg.staleEvery
+        && (state.lastStalePromptTurn === 0 || turn - state.lastStalePromptTurn > cfg.staleEvery)) {
+        agent.steer(steerMessage(renderTemplate(cfg.staleTemplate, cfg.staleEvery)))
+        state.lastStalePromptTurn = turn
+        state.staleCount = 0
       }
     }
     states.set(agent.session.id, state)
@@ -201,11 +182,9 @@ export async function apply(ctx, config = {}) {
 
 function emptyState() {
   return {
-    noTodoCount: 0,
     staleCount: 0,
     lastTodoWriteTurn: 0,
     lastCountedTurn: 0,
-    lastNoTodoPromptTurn: 0,
     lastStalePromptTurn: 0,
   }
 }

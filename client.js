@@ -2,11 +2,12 @@
  * @doiiarx/dsh-todo-continuation — browser settings page (Todo Gate section).
  * Same loading pattern as the client.js of @doiiarx/dsh-user-language:
  * `window.__ModuleLoader__.load` registers the browser-side plugin, binds the
- * `todo-continuation` settings namespace, and renders two editable interval
- * fields plus two editable advisory prompt templates (`0` disables an advisory;
+ * `todo-continuation` settings namespace, and renders one editable interval
+ * field plus one editable advisory prompt template (`0` disables the advisory;
  * a template must contain the required `{n}` placeholder, so an invalid draft
- * is never written). Each advisory's pair of fields is labeled by its trigger
- * condition: "If there is no todo list" / "If the todo list is not updated".
+ * is never written). The advisory pair is labeled "Stale-todo prompt …":
+ * the reminder fires only after the model has created a todo list — the
+ * plugin never asks for one.
  * After saving, the host side applies the new values on the
  * next turn-stopping, no restart needed.
  */
@@ -18,11 +19,9 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
 
     const NAMESPACE = "todo-continuation";
-    const DEFAULT_NO_TODO_EVERY = 0;
     const DEFAULT_STALE_EVERY = 20;
     // Client-side fallbacks mirror the host defaults; the host always sends the
     // schema-resolved values, so these only matter for defensive rendering.
-    const DEFAULT_NO_TODO_TEMPLATE = "No todo list has been created for the last {n} turns. For work that spans multiple steps or continues across turns, use the `todo_write` tool to plan and track it: create actionable todos, update their status as you finish, and complete the list before the work is done. A trivial single-step answer does not need a todo list.";
     const DEFAULT_STALE_TEMPLATE = "Automated note: the todo list has not been updated for the last {n} turns.\n\nDon't create or start new work because of this note. Check the current todo list in your context and do exactly one of the following:\n\n1. No list, empty, or all completed: remove it (if present) and continue with the user's request. Do not invent new items.\n2. Unfinished items remain: update only statuses that no longer match the real state. Do not add items not requested.\n\nIf neither applies, ignore this note and continue with the user's actual request.";
     const PLACEHOLDER_HINT = "Available placeholder: {n} = the effective interval of this advisory. The required {n} cannot be removed (an invalid template is not saved); unknown placeholders are sent as-is. Write it exactly as {n}, without spaces inside the braces.";
 
@@ -92,9 +91,7 @@ window.__ModuleLoader__.load({
       const value = snapshot.value;
       const busy = snapshot.status !== "ready" || value === undefined;
       const current = {
-        noTodo: intervalValue(value?.noTodoPromptEveryNTurns, DEFAULT_NO_TODO_EVERY),
         stale: intervalValue(value?.staleTodoPromptEveryNTurns, DEFAULT_STALE_EVERY),
-        noTodoTemplate: templateValue(value?.noTodoPromptTemplate, DEFAULT_NO_TODO_TEMPLATE),
         staleTemplate: templateValue(value?.staleTodoPromptTemplate, DEFAULT_STALE_TEMPLATE),
       };
 
@@ -125,22 +122,14 @@ window.__ModuleLoader__.load({
         h("div", null,
           h("h2", { style: { margin: "0 0 6px" } }, "Todo Gate"),
           h("p", { style: { margin: 0, color: "var(--dsw-alias-label-secondary)" } },
-            "The turn cannot stop while unfinished todos remain. The two intervals are advisory prompts; set 0 to disable one. Each advisory's text is an editable template with the required {n} placeholder.")
+            "The turn cannot stop while unfinished todos remain. The plugin never asks for a todo list: once the model creates one, the interval below controls the reminder to keep it updated; set 0 to disable. The reminder text is an editable template with the required {n} placeholder.")
         ),
         busy ? h("p", { style: { color: "var(--dsw-alias-label-secondary)" } }, "Loading configuration…")
           : h(React.Fragment, null,
-            numberField("If there is no todo list: interval (turns)", "After how many consecutive turns without any todo, prompt the model to start managing tasks with todos. 0 = disabled.", "noTodoPromptEveryNTurns", current.noTodo),
-            h(TemplateField, {
-              scope, writable: snapshot.writable, rows: 5,
-              label: "If there is no todo list: prompt text",
-              desc: "Text of the advisory sent after N consecutive turns without any todo.",
-              field: "noTodoPromptTemplate",
-              savedValue: current.noTodoTemplate,
-            }),
-            numberField("If the todo list is not updated: interval (turns)", "When a todo list exists but is not updated for this many consecutive turns, prompt the model to keep the list current. 0 = disabled.", "staleTodoPromptEveryNTurns", current.stale),
+            numberField("Stale-todo prompt interval", "When a todo list exists but is not updated for this many consecutive turns, prompt the model to keep the list current. 0 = disabled.", "staleTodoPromptEveryNTurns", current.stale),
             h(TemplateField, {
               scope, writable: snapshot.writable, rows: 10,
-              label: "If the todo list is not updated: prompt text",
+              label: "Stale-todo prompt text",
               desc: "Text of the advisory sent when an existing todo list is not updated for N consecutive turns.",
               field: "staleTodoPromptTemplate",
               savedValue: current.staleTemplate,
@@ -171,10 +160,8 @@ window.__ModuleLoader__.load({
         label: "Todo Gate",
         keywords: "todo gate prompt stale update interval disable template",
         items: [
-          { id: "noTodoPromptEveryNTurns", label: "If there is no todo list: interval (turns)", desc: "Prompt after turns without any todo; 0 = disabled", keywords: "todo gate no-todo prompt interval disabled" },
-          { id: "staleTodoPromptEveryNTurns", label: "If the todo list is not updated: interval (turns)", desc: "Prompt when the todo list is not updated; 0 = disabled", keywords: "todo gate stale update prompt interval disabled" },
-          { id: "noTodoPromptTemplate", label: "If there is no todo list: prompt text", desc: "Advisory text when no todo list exists; requires {n}", keywords: "todo gate no-todo prompt template text message placeholder" },
-          { id: "staleTodoPromptTemplate", label: "If the todo list is not updated: prompt text", desc: "Advisory text when an existing todo list is not updated; requires {n}", keywords: "todo gate stale update prompt template text message placeholder" },
+          { id: "staleTodoPromptEveryNTurns", label: "Stale-todo prompt interval", desc: "Prompt when the todo list is not updated; 0 = disabled", keywords: "todo gate stale update prompt interval disabled" },
+          { id: "staleTodoPromptTemplate", label: "Stale-todo prompt text", desc: "Advisory text when an existing todo list is not updated; requires {n}", keywords: "todo gate stale update prompt template text message placeholder" },
         ],
       });
     }

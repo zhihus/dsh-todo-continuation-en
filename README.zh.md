@@ -3,9 +3,10 @@
 [English](README.md) | [Русский](README.ru.md) | [简体中文](README.zh.md)
 
 DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stopping` 边界依据
-当前 turn 的最新 `todo/write` 快照决定是否放行结束，并对「长期不用 Todo」和
-「长期不更新 Todo」给出建议性提示。两个间隔和两条建议性提示的文本均可在 Web
-设置页配置，保存后下一轮立即生效。
+当前 turn 的最新 `todo/write` 快照决定是否放行结束，并在已有 Todo 列表长期
+未更新时提醒模型刷新它。是否创建 Todo 列表由模型自行决定——插件不会推动它
+规划；但列表一旦存在，插件就不会让模型把它晾在一边。间隔与提示文本均可在
+Web 设置页配置，保存后下一轮立即生效。
 
 > 本插件属于 [dsh-plugins](https://github.com/DoiiarX/dsh-plugins) 合集，
 > 完整的自研插件索引见该仓库。
@@ -17,16 +18,14 @@ DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stoppi
    **不再有任何标记例外**：以 `[WAITING_USER]`、`[INFO_NEEDED]` 或其他任何
    前缀开头的 todo 依然是未完成项，依然阻止结束。只有当当前 turn 快照中所有
    todo 都已完成时，才允许结束。
-2. **无 Todo 提示**（建议性）：连续 `noTodoPromptEveryNTurns` 轮没有任何 todo
-   快照时，发送无 Todo advisory 模板（`{n}` 替换为间隔值）。**默认 `0` = 关闭**
-   ——该提示本身会推动模型创建 todo 列表，与「todo 仅用于多步工作」的策略相悖；
-   需要时在设置页显式设置间隔。
-3. **过期 Todo 提示**（建议性）：已有 todo 列表却连续
+2. **过期 Todo 提示**（建议性）：已有 todo 列表（模型至少写入过一次）却连续
    `staleTodoPromptEveryNTurns`（默认 20）轮不更新时，发送过期 advisory 模板
    （`{n}` 替换为间隔值）。`0` 关闭该提示。
 
-插件绝不创建、删除、完成或改写 Todo——列表的唯一作者仍是模型。两条提示都是
-建议性的（本身不阻止结束），且各自每间隔最多触发一次，避免每轮催促。
+插件绝不创建、删除、完成或改写 Todo——列表的唯一作者仍是模型，插件也不推动
+模型去规划：从未有过 `todo/write` 的会话不会收到任何提示（无 Todo 提示已于
+v0.4.0 移除）。该提示是建议性的（本身不阻止结束），且每间隔最多触发一次，
+避免每轮催促。
 
 ## 停止门禁不变式
 
@@ -44,10 +43,10 @@ DeepSeek Harness（DSH）的 Todo 门禁与提示插件：在 `agent/turn-stoppi
 ## 组成
 
 - `index.js`（宿主端）：注册 `todo-continuation` settings 命名空间，监听
-  `agent/turn-stopping`，实现门禁与两条提示。零外部依赖，`schemastery` 在
-  `apply()` 里动态 import，失败降级为诊断日志。
-- `client.js`（浏览器端）：在设置页渲染「Todo 门禁」小节，编辑两个间隔字段和
-  两个 advisory 提示模板。
+  `agent/turn-stopping`，实现门禁与过期 Todo 提示。零外部依赖，`schemastery`
+  在 `apply()` 里动态 import，失败降级为诊断日志。
+- `client.js`（浏览器端）：在设置页渲染「Todo 门禁」小节，编辑过期提示的
+  间隔与文本。
 - `cordis.patch.yml`：声明 `dsh-todo-continuation` 插件行。
 - `package.json`：`@doiiarx/dsh-todo-continuation` 包清单，声明 `dsh.client`
   注入与 `schemastery` 依赖。
@@ -103,25 +102,23 @@ const WEB_SETTINGS_NAMESPACES = [
 
 ## 配置
 
-在设置页「Todo 门禁」小节可编辑。界面中每条 advisory 是一组字段（间隔 + 提示
-文本），按触发条件命名：**「If there is no todo list」**（键 `noTodoPrompt*`）
-与 **「If the todo list is not updated」**（键 `staleTodoPrompt*`）：
+在设置页「Todo 门禁」小节可编辑：
 
 | 字段 | 默认 | 含义 |
 | --- | --- | --- |
-| `noTodoPromptEveryNTurns` | 0 | 连续多少轮无 Todo 后提示开始使用；**0 = 关闭** |
 | `staleTodoPromptEveryNTurns` | 20 | 已有 Todo 却连续多少轮不更新后提示保持最新；0 = 关闭 |
-| `noTodoPromptTemplate` | 内置文本 | 无 Todo advisory 的文本；必须包含 `{n}` |
 | `staleTodoPromptTemplate` | 内置文本 | 过期 Todo advisory 的文本；必须包含 `{n}` |
+
+设置页的两个字段名为 **「Stale-todo prompt interval」** 与
+**「Stale-todo prompt text」**。
 
 ## 提示模板（占位符契约）
 
-模板有**两个**，每个 advisory 一个——两个事件携带相反的指令（「开始使用
-todo」vs「不要开始新工作，只刷新状态」），因此文本独立编辑。
+过期 advisory 有一个可编辑模板。默认文本刻意采用防御性措辞（「不要开始
+新工作，只刷新状态」），确保提醒不会推动模型编造新的 todo。
 
 | 模板 | 占位符 | 替换值 | 必需 |
 | --- | --- | --- | --- |
-| `noTodoPromptTemplate` | `{n}` | 生效的 `noTodoPromptEveryNTurns` 间隔 | 是 |
 | `staleTodoPromptTemplate` | `{n}` | 生效的 `staleTodoPromptEveryNTurns` 间隔 | 是 |
 
 契约：
@@ -163,6 +160,16 @@ todo」vs「不要开始新工作，只刷新状态」），因此文本独立�
   「Stale-todo prompt interval/template」→「If the todo list is not updated:
   interval (turns) / prompt text」。**仅界面变更**：配置键、默认值与 schema
   均未改动——无需迁移。
+
+### 升级说明（0.3.1 → 0.4.0）
+
+- **无 Todo 提示已整体移除**，连同其设置（`noTodoPromptEveryNTurns`、
+  `noTodoPromptTemplate`）与界面字段。插件不再催促模型创建 todo 列表：完全没有
+  `todo_write` 的会话不会收到任何提示。**无需迁移**：用户 settings.yaml 中残留
+  的键会在运行时被直接忽略（同 0.2.0 移除的 `waitingTodoPrefixes`），可随意删除。
+- 过期 Todo 提示保持不变——触发条件、计数器、`todo_write` 重置、turn 去重、
+  冷却与默认文本。设置页字段现名为 **「Stale-todo prompt interval」** /
+  **「Stale-todo prompt text」**。
 
 ## 发布策略
 

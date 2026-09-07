@@ -4,10 +4,11 @@
 
 A todo-backed turn-stop gate and prompt plugin for DeepSeek Harness (DSH). At the
 `agent/turn-stopping` boundary it reads the current turn's latest `todo/write`
-snapshot and decides whether the turn may stop, plus two advisory prompts for
-"no todo for a while" and "todo not updated for a while". Both intervals and
-both advisory prompt texts are editable in the web settings page and take
-effect on the next turn.
+snapshot and decides whether the turn may stop, plus one advisory prompt for an
+existing todo list that goes too long without an update. The model alone decides
+when to create a todo list — the plugin never pushes it to plan; once a list
+exists, the plugin keeps it alive. The interval and the advisory text are
+editable in the web settings page and take effect on the next turn.
 
 > Part of the [dsh-plugins](https://github.com/DoiiarX/dsh-plugins) collection —
 > see that repository for the full index of self-built plugins.
@@ -20,21 +21,16 @@ effect on the next turn.
    marker exceptions**: a todo that starts with `[WAITING_USER]`, `[INFO_NEEDED]`
    or any other prefix is still unfinished and still blocks the stop. A stop is
    allowed only when every todo in the turn's snapshot is completed.
-2. **No-todo prompt** (advisory): after `noTodoPromptEveryNTurns` consecutive
-   turns with no todo snapshot, it sends the no-todo advisory template with
-   `{n}` replaced by the interval. **Default: `0` = disabled** — the advisory
-   pushes the model toward creating todo lists, which contradicts the "todos
-   only for multi-step work" policy; opt in explicitly by setting the interval
-   in the settings page.
-3. **Stale-todo prompt** (advisory): when a todo list exists but goes
-   `staleTodoPromptEveryNTurns` (default 20) consecutive turns without an update,
-   it sends the stale-todo advisory template with `{n}` replaced by the
-   interval. `0` disables it.
+2. **Stale-todo prompt** (advisory): when a todo list exists (the model has
+   written todos at least once) but goes `staleTodoPromptEveryNTurns`
+   (default 20) consecutive turns without an update, it sends the stale-todo
+   advisory template with `{n}` replaced by the interval. `0` disables it.
 
 The plugin never creates, removes, completes, or rewrites todos — the model stays
-the sole author. The two prompts are advisory (they do not block a stop by
-themselves) and fire at most once per interval so the model is not nagged every
-turn.
+the sole author, and it never pushes the model to start planning: a session
+without any `todo_write` gets no advisory at all (the no-todo advisory was
+removed in v0.4.0). The advisory is soft (it does not block a stop by itself)
+and fires at most once per interval so the model is not nagged every turn.
 
 ## Stop-gate invariant
 
@@ -54,11 +50,11 @@ cancellation never passes through the gate.
 ## Composition
 
 - `index.js` (host): registers the `todo-continuation` settings namespace, listens
-  to `agent/turn-stopping`, and implements the gate plus both prompts. Zero external
-  dependencies; `schemastery` is imported dynamically in `apply()` and any failure
-  degrades to a diagnostic log.
+  to `agent/turn-stopping`, and implements the gate plus the stale-todo advisory.
+  Zero external dependencies; `schemastery` is imported dynamically in `apply()`
+  and any failure degrades to a diagnostic log.
 - `client.js` (browser): renders a "Todo Gate" section in the settings page for
-  editing the two interval fields and the two advisory prompt templates.
+  editing the stale-todo interval and prompt template.
 - `cordis.patch.yml`: declares the `dsh-todo-continuation` plugin row.
 - `package.json`: the `@doiiarx/dsh-todo-continuation` manifest with the
   `dsh.client` injection and the `schemastery` dependency.
@@ -117,27 +113,24 @@ Then rebuild the apiproxy (`pnpm run build:lib:host`) and restart the web proces
 
 ## Configuration
 
-Editable in the settings page's "Todo Gate" section. In the UI, each advisory is
-a pair of fields (interval + prompt text) labeled by its trigger condition:
-**"If there is no todo list"** (keys `noTodoPrompt*`) and **"If the todo list is
-not updated"** (keys `staleTodoPrompt*`):
+Editable in the settings page's "Todo Gate" section:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `noTodoPromptEveryNTurns` | 0 | consecutive turns without a todo before prompting to start one; **0 = disabled** |
 | `staleTodoPromptEveryNTurns` | 20 | consecutive turns without an update to an existing list before prompting to refresh it; 0 = disabled |
-| `noTodoPromptTemplate` | built-in default | text of the no-todo advisory; must contain `{n}` |
 | `staleTodoPromptTemplate` | built-in default | text of the stale-todo advisory; must contain `{n}` |
 
-## Prompt templates (placeholder contract)
+The two settings-page fields are labeled **"Stale-todo prompt interval"** and
+**"Stale-todo prompt text"**.
 
-There are **two separate templates**, one per advisory — the two events carry
-opposite instructions ("start using todos" vs "do not start new work, only
-refresh statuses"), so their texts are edited independently.
+## Prompt template (placeholder contract)
+
+The stale advisory has one editable template. Its default carries deliberately
+defensive instructions ("do not start new work, only refresh statuses") so that
+the reminder never pushes the model into inventing new todos.
 
 | Template | Placeholder | Substituted value | Required |
 | --- | --- | --- | --- |
-| `noTodoPromptTemplate` | `{n}` | the effective `noTodoPromptEveryNTurns` interval | yes |
 | `staleTodoPromptTemplate` | `{n}` | the effective `staleTodoPromptEveryNTurns` interval | yes |
 
 Contract:
@@ -153,8 +146,8 @@ Contract:
   and is rejected; `{{n}}` passes schema and renders through plain literal
   substitution with no special handling (e.g. `{{n}}` renders as `{5}`).
 - When the interval is `0` (advisory disabled) the template is not used at all.
-- The defaults reproduce the pre-v0.3.0 hardcoded texts byte-for-byte; if you
-  never edit a template, the sent messages are unchanged.
+- The default reproduces the pre-v0.3.0 hardcoded text byte-for-byte; if you
+  never edit the template, the sent message is unchanged.
 - If a hand-edited `settings.yaml` contains an invalid template, the namespace
   registration fails and the plugin degrades to all built-in defaults (including
   the intervals) with a diagnostic log — fix or remove the line to restore
@@ -186,6 +179,19 @@ Contract:
   text"; "Stale-todo prompt interval/template" → "If the todo list is not
   updated: interval (turns) / prompt text". **UI-only change**: configuration
   keys, defaults, and the schema are unchanged — nothing to migrate.
+
+### Upgrade notes (0.3.1 → 0.4.0)
+
+- The **no-todo advisory was removed** together with its settings
+  (`noTodoPromptEveryNTurns`, `noTodoPromptTemplate`) and UI fields. The plugin
+  no longer pushes the model to create a todo list: a session without any
+  `todo_write` gets no advisory at all. **Nothing to migrate**: stale keys left
+  in a user settings file are simply ignored at runtime (same as the removed
+  `waitingTodoPrefixes` in 0.2.0) and can be deleted at will.
+- The stale-todo advisory is unchanged — trigger, counter, reset on
+  `todo_write`, turn dedup, cooldown, and the default text. Its settings-page
+  labels are now **"Stale-todo prompt interval"** / **"Stale-todo prompt
+  text"**.
 
 ## Release policy
 

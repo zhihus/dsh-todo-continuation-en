@@ -17,14 +17,6 @@ import { apply } from '../index.js'
 
 const signal = { throwIfAborted() {} }
 
-/** The exact legacy no-todo advisory text (v0.2.0 builder output). */
-function legacyNoTodoText(n) {
-  return `No todo list has been created for the last ${n} turns. `
-    + 'For work that spans multiple steps or continues across turns, use the `todo_write` tool to plan and track it: '
-    + 'create actionable todos, update their status as you finish, and complete the list before the work is done. '
-    + 'A trivial single-step answer does not need a todo list.'
-}
-
 /** The exact legacy stale-todo advisory text (v0.2.0 builder output). */
 function legacyStaleText(n) {
   return `Automated note: the todo list has not been updated for the last ${n} turns.
@@ -177,38 +169,6 @@ test('allows stop after the todo list is completed in the same turn', async () =
   assert.equal(agent.steered.length, 1)
 })
 
-test('no-todo advisory fires after N turns when explicitly enabled', async () => {
-  const { gate } = await setup({ scopeValue: { noTodoPromptEveryNTurns: 5 } })
-  let agent
-  for (let turn = 1; turn <= 5; turn++) {
-    agent = makeAgent(turn)
-    gate(agent, turn)
-  }
-  assert.equal(agent.steered.length, 1)
-  assert.match(agent.steered[0].content[0].text, /No todo list has been created/)
-})
-
-test('no-todo advisory does not re-fire within the same interval', async () => {
-  const { gate } = await setup({ scopeValue: { noTodoPromptEveryNTurns: 5 } })
-  let agent
-  for (let turn = 1; turn <= 10; turn++) {
-    agent = makeAgent(turn)
-    gate(agent, turn)
-  }
-  // First prompt fired at turn 5; the cooldown requires turn - lastPrompt > 5.
-  assert.equal(agent.steered.length, 0)
-})
-
-test('noTodoPromptEveryNTurns = 0 disables the no-todo advisory', async () => {
-  const { gate } = await setup({ scopeValue: { noTodoPromptEveryNTurns: 0 } })
-  let agent
-  for (let turn = 1; turn <= 25; turn++) {
-    agent = makeAgent(turn)
-    gate(agent, turn)
-  }
-  assert.equal(agent.steered.length, 0)
-})
-
 test('stale advisory fires after N turns without an update (default 20)', async () => {
   const { gate } = await setup()
   let agent = makeAgent(1, [{ content: 'Tracked task', status: 'completed' }])
@@ -232,29 +192,13 @@ test('staleTodoPromptEveryNTurns = 0 disables the stale advisory', async () => {
   assert.equal(agent.steered.length, 0)
 })
 
-// --- v0.3.0: editable advisory templates (PLAN-v0.3.0-advisory-templates.md §7) ---
-
-test('T1: default no-todo template reproduces the legacy text exactly', async () => {
-  const { gate } = await setup({ scopeValue: { noTodoPromptEveryNTurns: 5 } })
-  const agent = runTurns(gate, 1, 5)
-  assert.equal(agent.steered.length, 1)
-  assert.equal(agent.steered[0].content[0].text, legacyNoTodoText(5))
-})
+// --- v0.3.0: editable advisory templates (PLAN-v0.3.0-advisory-templates.md §7); v0.4.0 removed the no-todo advisory ---
 
 test('T2: default stale template reproduces the legacy text exactly', async () => {
   const { gate } = await setup({ scopeValue: {} })
   const agent = runTurns(gate, 1, 21, COMPLETED)
   assert.equal(agent.steered.length, 1)
   assert.equal(agent.steered[0].content[0].text, legacyStaleText(20))
-})
-
-test('T3: custom no-todo template is used with {n} substituted', async () => {
-  const { gate } = await setup({
-    scopeValue: { noTodoPromptEveryNTurns: 3, noTodoPromptTemplate: 'Custom note {n}: make todos' },
-  })
-  const agent = runTurns(gate, 1, 3)
-  assert.equal(agent.steered.length, 1)
-  assert.equal(agent.steered[0].content[0].text, 'Custom note 3: make todos')
 })
 
 test('T4: custom stale template is used with {n} substituted', async () => {
@@ -275,20 +219,11 @@ test('T5: {n} receives the effective interval (stale override 7)', async () => {
   assert.equal(agent.steered[0].content[0].text, 'Stale 7')
 })
 
-test('T6: every occurrence of a repeated {n} is substituted', async () => {
-  const { gate } = await setup({
-    scopeValue: { noTodoPromptEveryNTurns: 2, noTodoPromptTemplate: 'Turn {n} of {n}' },
-  })
-  const agent = runTurns(gate, 1, 2)
-  assert.equal(agent.steered.length, 1)
-  assert.equal(agent.steered[0].content[0].text, 'Turn 2 of 2')
-})
-
 test('T7: an unknown placeholder stays verbatim and the message is still sent', async () => {
   const { gate } = await setup({
-    scopeValue: { noTodoPromptEveryNTurns: 2, noTodoPromptTemplate: 'No {foo} here {n}' },
+    scopeValue: { staleTodoPromptEveryNTurns: 2, staleTodoPromptTemplate: 'No {foo} here {n}' },
   })
-  const agent = runTurns(gate, 1, 2)
+  const agent = runTurns(gate, 1, 3, COMPLETED)
   assert.equal(agent.steered.length, 1)
   assert.equal(agent.steered[0].content[0].text, 'No {foo} here 2')
 })
@@ -304,25 +239,11 @@ test('T8: a stored template without {n} fails schema at registration and degrade
   assert.equal(agent.steered[0].content[0].text, legacyStaleText(20))
 })
 
-test('T9: an old config without template keys gets defaults (both advisories)', async () => {
-  const scopeValue = { noTodoPromptEveryNTurns: 6, staleTodoPromptEveryNTurns: 15 }
-  const noTodo = await setup({ scopeValue })
-  const agent = runTurns(noTodo.gate, 1, 6)
+test('T9: an old config without template keys gets the stale default text', async () => {
+  const { gate } = await setup({ scopeValue: { staleTodoPromptEveryNTurns: 15 } })
+  const agent = runTurns(gate, 1, 16, COMPLETED)
   assert.equal(agent.steered.length, 1)
-  assert.equal(agent.steered[0].content[0].text, legacyNoTodoText(6))
-
-  const stale = await setup({ scopeValue })
-  const staleAgent = runTurns(stale.gate, 1, 16, COMPLETED)
-  assert.equal(staleAgent.steered.length, 1)
-  assert.equal(staleAgent.steered[0].content[0].text, legacyStaleText(15))
-})
-
-test('T10: noTodoPromptEveryNTurns = 0 disables the advisory even with a custom template', async () => {
-  const { gate } = await setup({
-    scopeValue: { noTodoPromptEveryNTurns: 0, noTodoPromptTemplate: 'Custom {n}' },
-  })
-  const agent = runTurns(gate, 1, 25)
-  assert.equal(agent.steered.length, 0)
+  assert.equal(agent.steered[0].content[0].text, legacyStaleText(15))
 })
 
 test('T11: staleTodoPromptEveryNTurns = 0 disables the advisory even with a custom template', async () => {
@@ -331,4 +252,45 @@ test('T11: staleTodoPromptEveryNTurns = 0 disables the advisory even with a cust
   })
   const agent = runTurns(gate, 1, 25, COMPLETED)
   assert.equal(agent.steered.length, 0)
+})
+
+// --- v0.4.0: the model decides whether to plan; the plugin only tracks an existing list ---
+
+test('stale advisory never fires when the model has never written todos', async () => {
+  const { gate } = await setup({ scopeValue: { staleTodoPromptEveryNTurns: 2 } })
+  const agent = runTurns(gate, 1, 25)
+  assert.equal(agent.steered.length, 0)
+})
+
+test('first todo/write starts stale tracking without an immediate advisory', async () => {
+  const { gate } = await setup({ scopeValue: { staleTodoPromptEveryNTurns: 2 } })
+  const first = makeAgent(1, COMPLETED)
+  gate(first, 1)
+  assert.equal(first.steered.length, 0)
+  const second = makeAgent(2)
+  gate(second, 2)
+  assert.equal(second.steered.length, 0)
+})
+
+test('stale advisory resets after a new todo/write and fires again after the interval', async () => {
+  const { gate } = await setup({
+    scopeValue: { staleTodoPromptEveryNTurns: 2, staleTodoPromptTemplate: 'Refresh {n}' },
+  })
+  const steered = []
+  const run = (turn, todos) => {
+    const agent = makeAgent(turn, todos)
+    gate(agent, turn)
+    steered.push(...agent.steered)
+  }
+  run(1, COMPLETED) // first todo/write: tracking starts, no advisory
+  run(2) // no update: stale count 1
+  run(3) // stale count 2 -> fires with the user template
+  assert.equal(steered.length, 1)
+  assert.equal(steered[0].content[0].text, 'Refresh 2')
+  run(4, COMPLETED) // new update: resets the counter
+  run(5) // stale count 1, below the interval
+  assert.equal(steered.length, 1)
+  run(6) // stale count 2 and past the cooldown -> fires again
+  assert.equal(steered.length, 2)
+  assert.equal(steered[1].content[0].text, 'Refresh 2')
 })
