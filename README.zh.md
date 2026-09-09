@@ -11,27 +11,87 @@ Web 设置页配置，保存后下一轮立即生效。
 > 本插件属于 [dsh-plugins](https://github.com/DoiiarX/dsh-plugins) 合集，
 > 完整的自研插件索引见该仓库。
 
+## 两分钟验证
+
+1. 重启 DSH——运行中的进程持有旧代码，不重启就什么都不会变。
+2. 打开 **设置 → Todo Gate**，打开 **Log every decision**（其他不用动）。
+3. 在聊天里说：「为任务 X 建一个三项目的 todo 清单。只把第一项标成已完成，
+   别的什么都别做。」
+4. 应该看到的现象与含义：
+   - 模型无法结束回合，会收到关于未完成项的消息——这是**停止门禁**；
+   - 当上下文被压缩（或清单连续几回合没被更新）时，模型会收到带清单本体的
+     “Automated note: …”——这是**提醒**；
+   - 宿主日志里每个决策一行：`[todo-continuation] … at=stop-boundary …`，带原因
+     `prompt:…` / `skip:…` / `gate:…`。没有行 = 插件没挂载；有行 = 为什么沉默一目了然。
+5. 不想再被管：把 **Stale-todo prompt interval** 设为 0、**Stop-gate vetoes per
+   turn** 设为 0，两者都会消失。
+
+对着真实会话日志的自动检查（不需要模型和聊天）：
+
+    node test/verify-live.mjs --since "2026-09-09T11:05:00"
+
+读取 `~/.dsh/sessions`，统计已投递的提醒、否决与压缩，并对该时刻之后的事件强制
+执行契约；`--explain` 逐回合打印决策，`--id <id片段>` 只看一个会话。
+
+## 全部设置（设置 → Todo Gate）
+
+| 字段 | 默认 | 作用 |
+| --- | --- | --- |
+| Stale-todo prompt interval | 5 | 清单这么多回合没更新就提醒；0 = 关 |
+| Stop-gate vetoes per turn | 2 | 一个回合因未完成项被打回多少次；0 = 关；上限 10 |
+| Gate subagents too | 开 | 对委派会话同样否决 |
+| Hand the list back after a compaction | 开 | 压缩后立即交回清单 |
+| Post-compaction prompt text | 内置 | 压缩后交回的文本 |
+| Stale-todo prompt text | 内置 | 提醒文本（必须含 `{n}`） |
+| Log every decision | 关 | 插件每个决策往日志写一行 |
+| Per-list reminder cap | 0 | 对同一份未变更清单提醒 N 次后就安静，直到清单被改写；0 = 一直提醒 |
+
 ## 功能
 
-1. **硬停止门禁**：当前 turn 存在未完成 todo 时，turn 无法结束——每次被阻止的
-   停止尝试都会注入一条继续消息，模型在同一 turn 内继续推进。自 v0.2.0 起
+1. **停止门禁（带上限）**：当前 turn 存在未完成 todo 时，turn 无法结束——被阻止的
+   停止尝试会收到一条继续消息，模型在同一 turn 内继续推进。自 v0.2.0 起
    **不再有任何标记例外**：以 `[WAITING_USER]`、`[INFO_NEEDED]` 或其他任何
-   前缀开头的 todo 依然是未完成项，依然阻止结束。只有当当前 turn 快照中所有
-   todo 都已完成时，才允许结束。
-2. **过期 Todo 提示**（建议性）：已有 todo 列表（模型至少写入过一次）却连续
-   `staleTodoPromptEveryNTurns`（默认 20）轮不更新时，发送过期 advisory 模板
-   （`{n}` 替换为间隔值）。`0` 关闭该提示。
+   前缀开头的 todo 依然是未完成项，依然阻止结束。当且仅当当前 turn 快照中所有
+   todo 都已完成，或者该 turn 已用完 `gateMaxSteersPerTurn` 次否决额度（v0.5.0），
+   才允许结束。上限正是防止模型收不了的清单把 turn 无限拖下去：没有它，一次
+   停止边界可能在同一 turn 内被否决上百次。
+2. **过期 Todo 提示**（建议性）：当会话的**现行** Todo 清单——durable 会话日志里
+   最后一条 `todo/write`——仍含未完成项且已连续
+   `staleTodoPromptEveryNTurns`（默认 5）轮没有被重写时，插件注入 advisory
+   **并把清单本身渲染进去**，让模型在 compaction、恢复会话或宿主重启之后仍能
+   把它接回去。`{n}` 是实际空闲轮数。`0` 关闭该提示。
+3. **压缩后交回清单**（v0.6.0）：会话日志里出现 `compaction/summary` 记录，意味着模型
+   刚刚丢掉它正在执行的那份计划副本。只要常驻清单还有未完成项，就立即把它交回去，
+   不再等空闲间隔；每个 `compactionId` 只提醒一次。压缩失败（从未写出 summary）不算
+   触发条件。
+4. **回合中投递**（v0.6.0）：同一条提示还会作为附加上下文挂到下一个工具结果上，因此
+   不再依赖回合走到 stop 边界。因供应商报错（429）、被取消、或在回合仍打开时又发来新
+   消息而死掉的回合根本到不了那条边界——这正是「只在边界提醒」会整段沉默的原因。
+   回合中通道只添加上下文：它从不否决，自身出错时把已定的工具决策原样放行。
+5. **可见通知**（v0.6.0）：每次注入都声明为 `notice` 并带一行摘要，Web 客户端会在
+   转录中把它显示为一行折叠通知（“todo-continuation: …”）——插件的工作不仅模型
+   看得到，你也看得到。
+6. **单清单上限为可选**（v0.6.0）：默认情况下，只要清单未变更，提醒就会按间隔不断
+   重复——与原版插件一致。嫌吵就设置“Per-list reminder cap”：对同一清单提醒 N 次后
+   插件会安静下来，直到清单被改写或发生新的压缩（进入安静模式会在宿主日志中以
+   `info` 级别记录一次，而非 `debug`）。
+
+空闲程度在检查时从会话日志读出，而不是从本进程碰巧看到了什么推断：重启后恢复的
+会话与从未中断的会话判断方式完全一致。（v0.5.0 之前，「有没有清单」来自内存里的
+计数器，每次重启归零，所以真实会话里这条提示几乎从不触发。）内存里只保留提示
+冷却与当前 turn 的否决计数，它们丢失的代价至多是一条多余提醒。
 
 插件绝不创建、删除、完成或改写 Todo——列表的唯一作者仍是模型，插件也不推动
 模型去规划：从未有过 `todo/write` 的会话不会收到任何提示（无 Todo 提示已于
-v0.4.0 移除）。该提示是建议性的（本身不阻止结束），且每间隔最多触发一次，
-避免每轮催促。
+v0.4.0 移除），全部条目已完成的清单同样不会——没有可恢复的东西。该提示是
+建议性的（本身不阻止结束），且每间隔最多触发一次，避免每轮催促。
 
 ## 停止门禁不变式
 
 > 在每个 `agent/turn-stopping` 事件上，门禁要么在当前 turn 的 `todo/write`
-> 快照中找到零个未完成 todo，要么注入一条继续 steer——绝不会促成带着未完成
-> todo 结束 turn。门禁不抛异常、不越过用户取消（abort 按设计绕过停止边界），
+> 快照中找到零个未完成 todo，要么注入一条继续 steer——直到该 turn 的否决额度
+> （`gateMaxSteersPerTurn`，0 = 永不否决）用完才放行结束，触顶会记入日志。
+> 门禁不抛异常、不越过用户取消（abort 按设计绕过停止边界），
 > 且只读取自己会话的 todo。
 
 门禁阻止停止时，模型被告知：完成 todo，或在需要用户输入时调用
@@ -42,11 +102,13 @@ v0.4.0 移除）。该提示是建议性的（本身不阻止结束），且每�
 
 ## 组成
 
-- `index.js`（宿主端）：注册 `todo-continuation` settings 命名空间，监听
-  `agent/turn-stopping`，实现门禁与过期 Todo 提示。零外部依赖，`schemastery`
-  在 `apply()` 里动态 import，失败降级为诊断日志。
-- `client.js`（浏览器端）：在设置页渲染「Todo 门禁」小节，编辑过期提示的
-  间隔与文本。
+- `index.js`（宿主端）：注册 `todo-continuation` 设置命名空间，实现带上限的
+  stop 门禁，以及从会话日志推导出的常驻清单提示；投递走 `agent/turn-stopping`
+  **和**回合中的 `tools/post-execute` 附加上下文。无外部依赖；`schemastery` 在
+  `apply()` 内动态导入，任何失败都退回内置默认值——并且大声报告，因为静默降级的间隔
+  与一个什么都不做的插件无法区分。
+- `client.js`（浏览器端）：渲染设置页里的 “Todo Gate” 区块——间隔、每回合否决上限、
+  压缩后交回开关及其文本、过期提示文本，以及决策日志开关。
 - `cordis.patch.yml`：声明 `dsh-todo-continuation` 插件行。
 - `package.json`：`@doiiarx/dsh-todo-continuation` 包清单，声明 `dsh.client`
   注入与 `schemastery` 依赖。
@@ -106,20 +168,50 @@ const WEB_SETTINGS_NAMESPACES = [
 
 | 字段 | 默认 | 含义 |
 | --- | --- | --- |
-| `staleTodoPromptEveryNTurns` | 20 | 已有 Todo 却连续多少轮不更新后提示保持最新；0 = 关闭 |
-| `staleTodoPromptTemplate` | 内置文本 | 过期 Todo advisory 的文本；必须包含 `{n}` |
+| `staleTodoPromptEveryNTurns` | 5 | 常驻清单连续多少个回合没有被重写后把清单交还给模型；0 = 关闭 |
+| `gateMaxSteersPerTurn` | 2 | 一个回合因未完成 todo 被打回多少次后才放行停止；0 = 门禁永不否决；上限 10 |
+| `gateSubagents` | true | 是否对委派的（subagent）会话同样否决；设为 `false` 就不再打回子代理，但仍会把清单作为上下文交给它 |
+| `promptAfterCompaction` | true | 压缩一落地就把清单交回去，不等间隔 |
+| `compactionPromptTemplate` | 内置默认 | 压缩后交回的文本；不要求任何占位符 |
+| `staleTodoPromptTemplate` | 内置默认 | 过期提示文本；必须包含 `{n}` |
+| `logDecisions` | false | 每个边界和每个工具结果往宿主日志写一行：做了什么，或为什么沉默 |
 
-设置页的两个字段名为 **「Stale-todo prompt interval」** 与
-**「Stale-todo prompt text」**。
+设置页的八个字段名为 **“Stale-todo prompt interval”**、
+**“Stop-gate vetoes per turn”**、**“Gate subagents too”**、**“Hand the list back after
+a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prompt text”** 和
+**“Log every decision”**。
+
+所有阈值都在用时从 settings 文档读取，所以在设置页保存后下一个边界就生效，无需重启。
+
+## 决策日志写什么
+
+打开 `logDecisions` 后，每个边界和每个工具结果各产生一行：
+
+```
+[todo-continuation] session "…" turn 12 at=stop-boundary skip:idle 2<5
+[todo-continuation] session "…" turn 12 at=mid-tool-result prompt:compaction id=9458… idle=1
+[todo-continuation] session "…" turn 12 at=stop-boundary gate:block unfinished=1/3 vetoes=1/2
+[todo-continuation] session "…" turn 12 at=stop-boundary gate:cap-reached unfinished=1 vetoes=2/2 allow-stop
+```
+
+你会看到的原因：`prompt:compaction`、`prompt:stale`、`gate:block`、
+`gate:cap-reached`、`gate:off`、`gate:allow`、`gate:skipped subagent`，以及跳过原因
+`no-list`、`no-unfinished`、`interval-off`、`no-write-turn`、`idle N<cfg`、
+`cooldown N<cfg`、`quiet`（就是上面的自适应退避）。这就是
+「插件死了」与「还没到点」之间的区别——否则只能去翻压缩过的会话日志。
 
 ## 提示模板（占位符契约）
 
-过期 advisory 有一个可编辑模板。默认文本刻意采用防御性措辞（「不要开始
-新工作，只刷新状态」），确保提醒不会推动模型编造新的 todo。
+过期 advisory 有一个可编辑模板。其默认文本要求模型对最旧的未完成项迈出具体一步，
+或者重写/清空已经与工作实际不符的清单——并且把清单本身带进消息，因为 DSH 在每个
+`turn/start` 都会清掉现行计划，compaction 之后的上下文里可能根本没有它的副本。
 
 | 模板 | 占位符 | 替换值 | 必需 |
 | --- | --- | --- | --- |
-| `staleTodoPromptTemplate` | `{n}` | 生效的 `staleTodoPromptEveryNTurns` 间隔 | 是 |
+| `staleTodoPromptTemplate` | `{n}` | 现行清单**实际**多少轮没有被重写 | 是 |
+| `staleTodoPromptTemplate` | `{todos}` | 现行清单，每项一行 `- [status] content`（最多 30 项，每项 200 字符） | 否 |
+| `staleTodoPromptTemplate` | `{total}` | 现行清单的条目数 | 否 |
+| `staleTodoPromptTemplate` | `{unfinished}` | 状态不是 `completed` 的条目数 | 否 |
 
 契约：
 
@@ -135,6 +227,13 @@ const WEB_SETTINGS_NAMESPACES = [
 - 默认值逐字节复现 v0.3.0 之前的硬编码文本；只要不编辑模板，发送的消息不变。
 - 如果手动编辑的 `settings.yaml` 中包含无效模板，命名空间注册会失败，插件降级
   到全部内置默认值（包括间隔）并输出诊断日志——修复或删除该行以恢复用户覆盖。
+
+### 压缩后模板
+
+`compactionPromptTemplate` 接受与过期模板相同的占位符——`{todos}`、`{total}`、
+`{unfinished}` 和 `{n}`（自清单最后一次写入起的回合数）——但**不强制任何一个**。
+两个模板共享同一条保证：文本里没有 `{todos}` 时，渲染出的清单照样追加在下方，因为
+看不到计划的提醒算不上提醒。
 
 ### 升级说明（0.1.0 → 0.2.0）
 
@@ -170,6 +269,46 @@ const WEB_SETTINGS_NAMESPACES = [
 - 过期 Todo 提示保持不变——触发条件、计数器、`todo_write` 重置、turn 去重、
   冷却与默认文本。设置页字段现名为 **「Stale-todo prompt interval」** /
   **「Stale-todo prompt text」**。
+
+### 升级说明（0.4.0 → 0.5.0）
+
+- **过期提示现在熬得过重启。**「会话是否有现行清单、它空闲了多久」改为从
+  `turn/start` / `todo/write` 历史回答，而不是内存计数器，因此恢复会话或重启宿主
+  不再把插件重置成“这里从未规划过”——这正是真实会话里提示几乎不触发的原因。
+- **提示会带上清单**（新的 `{todos}` / `{total}` / `{unfinished}`），且 `{n}`
+  渲染真实空闲轮数而不是配置的间隔。你自己保存过的模板照常工作——只是不含清单；
+  清空该字段即可换回新的默认文本。
+- **全部完成的清单不再被唠叨。**提示至少需要一个非 `completed` 条目；用空的
+  `todo_write` 清空清单同样终止提醒。
+- **门禁有了上限**：新的 `gateMaxSteersPerTurn`（默认 2，0 = 关闭门禁）。想要
+  过去那种无限否决循环就调高它——真实会话日志说明了它的结局（单个 turn 约 150
+  次否决，一个多小时的 token）。
+- `DEFAULT_STALE_EVERY` 从 20 降到 5，settings 注册失败改为大声报告。
+- 无需迁移：设置文件里残留的 `noTodoPromptEveryNTurns` 会被忽略（随时可删）。
+
+### 升级说明（0.5.0 → 0.6.0）
+
+- **常驻清单多了两个触发器。**落地的压缩立即交回清单（`promptAfterCompaction`，默认
+  开启，独立可编辑文本），提示现在也会作为工具结果的附加上下文在回合中送达，不再
+  需要 stop 边界。
+- **`logDecisions`**（默认关闭）为每个边界和每个工具结果打印一行原因——见「决策日志
+  写什么」。在报告「它不响」之前先打开它。
+- **`gateMaxSteersPerTurn` 上限收紧为 10**；早期版本删掉的设置键
+  （`noTodoPromptEveryNTurns`、`noTodoPromptTemplate`、`waitingTodoPrefixes`）现在会
+  在日志里点名一次，而不再被静默忽略。
+- **模板漏写 `{todos}` 时清单会被自动追加**，编辑过的提醒不可能弄丢计划。
+- **提醒不再自动安静**：「两次提醒后沉默」改为可选设置“Per-list reminder cap”（默认 0 = 永不安静）。
+- **每次注入都是转录里的可见通知**（`notice` + 一行摘要）。
+- **`gateSubagents`**（默认 `true`）决定是否否决委派的会话。委派身份读 durable 会话头
+  （`origin`、`delegationDepth`），兜底是日志里的 `subagent/descriptor` 事件；认不出的形态
+  按顶层会话处理，所以字段缺失不会让门禁失效。
+- **`UPSTREAM.md`** 是给 DSH 内核的提案：宿主在每个 `turn/start` 清空 `todos` 投影，
+  而最后一份快照就在日志里。门禁只作用于当前回合、`readStandingTodos` 要遍历日志，
+  都是因为这道缝隙。
+- **开发流程**：`npm run verify` = 两侧语法检查 + 全量测试。插件可以在 profile 的
+  `cordis.patch.yml` 里以 `link:<路径>` 挂载，而不是往 `node_modules` 拷文件，这样
+  「我同步了没有」这个问题根本不会出现。
+- 无需迁移：现有配置继续有效，并获得新的默认值。
 
 ## 发布策略
 

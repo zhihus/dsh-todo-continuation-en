@@ -13,30 +13,111 @@ editable in the web settings page and take effect on the next turn.
 > Part of the [dsh-plugins](https://github.com/DoiiarX/dsh-plugins) collection —
 > see that repository for the full index of self-built plugins.
 
+## Verify it in two minutes
+
+1. Restart DSH — the running process keeps the old plugin code in memory, so without
+   a restart nothing new appears.
+2. Open **Settings → Todo Gate** and switch on **Log every decision** (nothing else
+   needs touching).
+3. In the chat, say: "Make a todo list of three items for task X. Mark only the
+   first one completed. Do nothing else."
+4. What should happen, and what it means:
+   - the model is not allowed to end the turn and receives a message about the
+     unfinished items — that is the **stop gate**;
+   - when the context is condensed (or the list goes un-updated for several turns),
+     the model receives an "Automated note: …" carrying the list itself — that is
+     the **reminder**;
+   - the host log gains one line per decision,
+     `[todo-continuation] … at=stop-boundary …`, with the reason: `prompt:…`,
+     `skip:…` or `gate:…`. No line → the plugin is not mounted; a line → it says
+     exactly why anything stayed silent.
+5. Done experimenting? Set **Stale-todo prompt interval** = 0 and **Stop-gate
+   vetoes per turn** = 0 and both go away.
+
+Automatic check over the real session logs (no model, no chat needed):
+
+    node test/verify-live.mjs --since "2026-09-09T11:05:00"
+
+reads your `~/.dsh/sessions`, counts delivered reminders, vetoes and compactions,
+and enforces the contract on events after the given moment; `--explain` prints the
+decision per turn, `--id <part-of-id>` limits the run to one session.
+
+## Every setting (Settings → Todo Gate)
+
+| Field | Default | What it does |
+| --- | --- | --- |
+| Stale-todo prompt interval | 5 | remind about a list un-updated for this many turns; 0 = off |
+| Stop-gate vetoes per turn | 2 | how often one turn may be sent back over unfinished items; 0 = off; max 10 |
+| Gate subagents too | on | veto delegated sessions as well |
+| Hand the list back after a compaction | on | return the list right after the context is condensed |
+| Post-compaction prompt text | built-in | text of that hand-back |
+| Stale-todo prompt text | built-in | reminder text (`{n}` required) |
+| Log every decision | off | one host-log line per plugin decision |
+| Per-list reminder cap | 0 | after N reminders about one unchanged list, go quiet until it is rewritten; 0 = remind indefinitely |
+
 ## Features
 
-1. **Stop gate (hard)**: while the current turn has unfinished todos, the turn
-   cannot stop — every blocked stop attempt injects a continuation message and
-   the model keeps working inside the same turn. Since v0.2.0 there are **no
+1. **Stop gate (bounded)**: while the current turn has unfinished todos, the turn
+   cannot stop — a blocked stop attempt injects a continuation message and the
+   model keeps working inside the same turn. Since v0.2.0 there are **no
    marker exceptions**: a todo that starts with `[WAITING_USER]`, `[INFO_NEEDED]`
    or any other prefix is still unfinished and still blocks the stop. A stop is
-   allowed only when every todo in the turn's snapshot is completed.
-2. **Stale-todo prompt** (advisory): when a todo list exists (the model has
-   written todos at least once) but goes `staleTodoPromptEveryNTurns`
-   (default 20) consecutive turns without an update, it sends the stale-todo
-   advisory template with `{n}` replaced by the interval. `0` disables it.
+   allowed when every todo in the turn's snapshot is completed — or once the turn
+   has spent its `gateMaxSteersPerTurn` vetoes (v0.5.0). The cap is what keeps a
+   plan the model cannot finish from spinning the turn: without it, one stop
+   boundary can be vetoed hundreds of times inside a single turn.
+2. **Stale-todo prompt** (advisory): when the session's **standing** todo list —
+   the last `todo/write` in the durable session log — still has unfinished items
+   and has not been rewritten for `staleTodoPromptEveryNTurns` (default 5)
+   turns, the plugin injects the advisory **with the list rendered into it**, so
+   the model can pick the plan back up after a compaction, a resume, or a host
+   restart. `{n}` is the actual number of idle turns. `0` disables it.
+3. **Post-compaction hand-back** (v0.6.0): when a `compaction/summary` lands in
+   the session log after the standing list was last written, the model has just
+   lost the copy of the plan it was working from — so the list is re-injected
+   immediately instead of waiting out the stale interval. One reminder per
+   `compactionId`, and a compaction that failed (no summary was ever written) is
+   not a trigger.
+4. **Mid-turn delivery** (v0.6.0): the same advisory is attached to the next tool
+   result as additional context, so it no longer depends on the turn reaching its
+   stop boundary. A turn that dies on a provider error (429), a cancellation, or a
+   message typed while it is still open never reaches that boundary — which is why
+   a stop-boundary-only reminder stays silent for whole sessions. The mid-turn
+   channel only adds context: it never vetoes, and any failure inside it passes the
+   settled tool decision through untouched.
+5. **Visible notices** (v0.6.0): every injection is declared as a `notice` with a
+   one-line summary, so the web client shows it in the transcript as a collapsed
+   row ("todo-continuation: …") — the plugin's work is visible to you, not only
+   to the model.
+6. **Per-list cap is opt-in** (v0.6.0): by default the reminder repeats every
+   interval for as long as the list stands unchanged — the original plugin's
+   behavior. If it ever gets noisy, set "Per-list reminder cap": after N reminders
+   about one and the same list the plugin goes quiet until the list is rewritten or
+   a new compaction lands (the transition is announced once in the host log, at
+   `info`, not `debug`).
 
+Staleness is measured from the session log at check time, never from what the
+plugin happened to observe in this process: a session reopened after a restart is
+judged exactly like one that stayed up. (Before v0.5.0 the "does a list exist"
+answer came from an in-memory counter that reset on every restart, so the
+reminder was disabled in most real sessions.) Only the reminder rate limit and
+the per-turn veto count stay in memory, and losing them costs at most one extra
+reminder.
 The plugin never creates, removes, completes, or rewrites todos — the model stays
 the sole author, and it never pushes the model to start planning: a session
 without any `todo_write` gets no advisory at all (the no-todo advisory was
-removed in v0.4.0). The advisory is soft (it does not block a stop by itself)
-and fires at most once per interval so the model is not nagged every turn.
+removed in v0.4.0), and neither does a standing list whose items are all
+completed — there is nothing left to restore. The advisory is soft (it never
+blocks a stop by itself) and fires at most once per interval, so the model is not
+nagged every turn.
 
 ## Stop-gate invariant
 
 > On every `agent/turn-stopping` event the gate either finds zero unfinished
 > todos in the current turn's `todo/write` snapshot, or injects a continuation
-> steer — and never contributes to ending a turn with unfinished todos. The
+> steer — until the turn's veto budget (`gateMaxSteersPerTurn`, 0 = the gate
+> never vetoes) is spent, after which the stop is allowed and hitting the cap is
+> logged. The
 > gate never throws, never acts across a user cancellation (abort bypasses the
 > stop boundary by design), and only reads its own session's todos.
 
@@ -49,12 +130,16 @@ cancellation never passes through the gate.
 
 ## Composition
 
-- `index.js` (host): registers the `todo-continuation` settings namespace, listens
-  to `agent/turn-stopping`, and implements the gate plus the stale-todo advisory.
-  Zero external dependencies; `schemastery` is imported dynamically in `apply()`
-  and any failure degrades to a diagnostic log.
-- `client.js` (browser): renders a "Todo Gate" section in the settings page for
-  editing the stale-todo interval and prompt template.
+- `index.js` (host): registers the `todo-continuation` settings namespace and
+  implements the bounded stop gate plus the standing-list advisory, derived from the
+  session log, delivered at `agent/turn-stopping` **and** mid-turn via
+  `tools/post-execute` additional contexts. Zero external dependencies;
+  `schemastery` is imported dynamically in `apply()` and any failure degrades to
+  built-in defaults — announced loudly, because a silently degraded interval is
+  indistinguishable from a plugin that does nothing.
+- `client.js` (browser): renders the "Todo Gate" section in the settings page for
+  the interval, the veto cap, the post-compaction switch and its text, the stale
+  advisory text, and the decision-log switch.
 - `cordis.patch.yml`: declares the `dsh-todo-continuation` plugin row.
 - `package.json`: the `@doiiarx/dsh-todo-continuation` manifest with the
   `dsh.client` injection and the `schemastery` dependency.
@@ -117,41 +202,79 @@ Editable in the settings page's "Todo Gate" section:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `staleTodoPromptEveryNTurns` | 20 | consecutive turns without an update to an existing list before prompting to refresh it; 0 = disabled |
+| `staleTodoPromptEveryNTurns` | 5 | turns the standing todo list may go without a rewrite before the model is handed the list back; 0 = disabled |
+| `gateMaxSteersPerTurn` | 2 | how many times one turn may be sent back for unfinished todos before the stop is allowed; 0 = the gate never vetoes; clamped to 10 |
+| `gateSubagents` | true | whether a delegated (subagent) session is vetoed the same way; with `false` a child is never sent back, but still receives the list as context |
+| `promptAfterCompaction` | true | hand the standing list back as soon as a compaction has landed, without waiting for the interval |
+| `compactionPromptTemplate` | built-in default | text of the post-compaction hand-back; no placeholder is required |
 | `staleTodoPromptTemplate` | built-in default | text of the stale-todo advisory; must contain `{n}` |
+| `logDecisions` | false | log one line per boundary and per tool result saying what the plugin did, or why it stayed silent |
 
-The two settings-page fields are labeled **"Stale-todo prompt interval"** and
-**"Stale-todo prompt text"**.
+The seven settings-page fields are labeled **"Stale-todo prompt interval"**,
+**"Stop-gate vetoes per turn"**, **"Gate subagents too"**, **"Hand the list back after
+a compaction"**, **"Post-compaction prompt text"**, **"Stale-todo prompt text"** and
+**"Log every decision"**
 
-## Prompt template (placeholder contract)
+Every threshold is read live from the settings document, so saving a value in the
+settings page changes the next boundary without a restart — except
+`logDecisions`, which takes effect from the next decision anyway, and the veto
+cap, which is also clamped to 10 at read time. The backoff threshold (two
+advisories per unchanged list) is a constant on purpose: a knob that lets a user
+turn noise back on is how the feature stops being a defense against noise.
 
-The stale advisory has one editable template. Its default carries deliberately
-defensive instructions ("do not start new work, only refresh statuses") so that
-the reminder never pushes the model into inventing new todos.
+## What the decision log says
+
+With `logDecisions` on, each boundary and each tool result produces one line:
+
+```
+[todo-continuation] session "…" turn 12 at=stop-boundary skip:idle 2<5
+[todo-continuation] session "…" turn 12 at=mid-tool-result prompt:compaction id=9458… idle=1
+[todo-continuation] session "…" turn 12 at=stop-boundary gate:block unfinished=1/3 vetoes=1/2
+[todo-continuation] session "…" turn 12 at=stop-boundary gate:cap-reached unfinished=1 vetoes=2/2 allow-stop
+```
+
+Reasons you will see: `prompt:compaction`, `prompt:stale`, `gate:block`,
+`gate:cap-reached`, `gate:off`, `gate:allow`, `gate:skipped subagent` and the skips
+`no-list`, `no-unfinished`, `interval-off`, `no-write-turn`, `idle N<cfg`,
+`cooldown N<cfg`, `quiet` (the backoff above). This is the
+difference between "the plugin is dead" and "nothing was due", which otherwise
+takes a compressed session log to answer.
+
+## Prompt templates and placeholders
+
+The stale advisory has one editable template. Its default tells the model to take
+one concrete step on the oldest unfinished item, or to rewrite/clear a list that
+no longer matches the work — and it carries the list itself, because DSH clears
+the standing plan at every `turn/start` and a compacted context may hold no copy
+of it.
 
 | Template | Placeholder | Substituted value | Required |
 | --- | --- | --- | --- |
-| `staleTodoPromptTemplate` | `{n}` | the effective `staleTodoPromptEveryNTurns` interval | yes |
+| `staleTodoPromptTemplate` | `{n}` | the ACTUAL number of turns the standing list went without an update | yes |
+| `staleTodoPromptTemplate` | `{todos}` | the standing list, one `- [status] content` line per item (max 30 items, 200 chars each) | no |
+| `staleTodoPromptTemplate` | `{total}` | number of items in the standing list | no |
+| `staleTodoPromptTemplate` | `{unfinished}` | number of items that are not `completed` | no |
 
 Contract:
 
-- Substitution is literal: every occurrence of `{n}` is replaced with the
-  interval (repeated `{n}` are all replaced). No template engine involved.
+- Substitution is literal: every occurrence of a placeholder is replaced with its
+  value (repeated placeholders are all replaced). No template engine involved.
 - **A template without `{n}` cannot be saved.** The settings schema enforces it
   (`Schema.string().pattern(/\{n\}/)`): the settings page pre-validates your
   draft and only writes valid templates; any write through the settings
   infrastructure is validated against the schema before persistence. An
   unknown placeholder such as `{foo}` is allowed and rendered verbatim.
-- Write the placeholder exactly as `{n}` — `{ n }` (with spaces) does not match
-  and is rejected; `{{n}}` passes schema and renders through plain literal
-  substitution with no special handling (e.g. `{{n}}` renders as `{5}`).
+- Write a placeholder exactly as `{name}` — `{ n }` (with spaces) does not match
+  the pattern and is rejected; `{{n}}` passes the schema and renders through
+  plain literal substitution with no special handling (e.g. with `{n}` = 5 it
+  renders as `{5}`).
 - When the interval is `0` (advisory disabled) the template is not used at all.
-- The default reproduces the pre-v0.3.0 hardcoded text byte-for-byte; if you
-  never edit the template, the sent message is unchanged.
-- If a hand-edited `settings.yaml` contains an invalid template, the namespace
-  registration fails and the plugin degrades to all built-in defaults (including
-  the intervals) with a diagnostic log — fix or remove the line to restore
-  overrides.
+- The default text changed in v0.5.0, so a config that never overrode the
+  template now sends the new wording with the list included.
+- If a `settings.yaml` section contains an invalid template, schemastery rejects
+  it at registration, the namespace is never created, and the plugin runs on
+  every built-in default — announcing `DEGRADED` in the host log. Until the line
+  is fixed or removed, the "Todo Gate" settings page has nothing to edit.
 
 ### Upgrade notes (0.1.0 → 0.2.0)
 
@@ -192,6 +315,59 @@ Contract:
   `todo_write`, turn dedup, cooldown, and the default text. Its settings-page
   labels are now **"Stale-todo prompt interval"** / **"Stale-todo prompt
   text"**.
+
+### Upgrade notes (0.4.0 → 0.5.0)
+
+- **The stale-todo reminder became restart-safe.** "Does this session have a
+  standing list, and how long has it been idle?" is answered from the session's
+  `turn/start` / `todo/write` history instead of an in-memory counter, so a
+  resumed session or a host restart no longer resets the plugin to "never planned
+  here" — the reason the reminder almost never fired in practice.
+- **The advisory now carries the list** through the new `{todos}` / `{total}` /
+  `{unfinished}` placeholders, and `{n}` renders the real idle span instead of
+  the configured interval. A custom template you saved keeps working unchanged —
+  it just does not show the list; clear the field to get the new default text.
+- **A completed list is never nagged.** The advisory requires at least one item
+  that is not `completed`; clearing the list (an empty `todo_write`) also ends it.
+- **The stop gate is bounded** by the new `gateMaxSteersPerTurn` (default 2,
+  0 = gate off). Raise it if you want the old unbounded veto loop back; the logs
+  of real sessions show where that leads (~150 vetoes in one turn, over an hour
+  of tokens).
+- `DEFAULT_STALE_EVERY` dropped from 20 to 5, and a failed settings registration is
+  reported loudly instead of silently degrading to defaults.
+- Nothing to migrate: a leftover `noTodoPromptEveryNTurns` in your settings file
+  is ignored (delete it whenever you like).
+
+### Upgrade notes (0.5.0 → 0.6.0)
+
+- **Two new triggers for the standing list.** A landed compaction hands the list
+  back at once (`promptAfterCompaction`, on by default, own editable text), and
+  the advisory is now also delivered mid-turn as additional context on a tool
+  result, so it no longer requires the turn to reach a stop boundary.
+- **`logDecisions`** (off by default) prints one reason per boundary and per tool
+  result — see "What the decision log says". Turn it on before reporting silence.
+- **`gateMaxSteersPerTurn` is clamped to 10**, and settings keys removed in
+  earlier versions (`noTodoPromptEveryNTurns`, `noTodoPromptTemplate`,
+  `waitingTodoPrefixes`) are now named in the log once instead of being silently
+  ignored.
+- **A template that omits `{todos}` gets the list appended**, so an edited
+  reminder cannot lose the plan.
+- **Two unanswered advisories about the same list are the last two** (adaptive
+  backoff). Before, an ignored list could be handed back every interval for the rest
+  of the session; the entry into quiet mode is logged once at `info`.
+- **`gateSubagents`** (default `true`) chooses whether delegated sessions are vetoed
+  too. Delegation is read from the durable session header (`origin`,
+  `delegationDepth`) with the `subagent/descriptor` log event as fallback; an
+  unrecognized shape is treated as a top-level session, so a missing field cannot
+  disarm the gate.
+- **`UPSTREAM.md`** now records the host-side change this plugin works around: DSH
+  clears the `todos` projection at every `turn/start` although the last snapshot is in
+  the log. The gate being turn-local, and the log walk in `readStandingTodos`, both
+  exist because of that gap.
+- **Dev workflow**: `npm run verify` = parse-check both sides + the full suite. The
+  plugin can be mounted as `link:<path>` in the profile's `cordis.patch.yml` instead of
+  copying files into `node_modules`, which removes the "did I sync?" question entirely.
+- Nothing to migrate: existing configs keep working and gain the new defaults.
 
 ## Release policy
 

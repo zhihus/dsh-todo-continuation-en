@@ -1,8 +1,8 @@
 {
   "name": "@doiiarx/dsh-todo-continuation",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "private": true,
-  "description": "Todo-backed turn-stop gate and prompt plugin for DeepSeek Harness: blocks stop on unfinished work and reminds the model to refresh an existing todo list that goes un-updated, configurable in the settings page.",
+  "description": "Todo-backed turn-stop gate and prompt plugin for DeepSeek Harness: vetoes a stop (bounded per turn) while the turn's todo list has unfinished work, and hands the standing list back to the model when it goes un-updated or right after a context compaction - delivered at the stop boundary and mid-turn, measured from the durable session log, so it survives restarts. Configurable in the settings page.",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -14,9 +14,19 @@
     "type": "git",
     "url": "git+https://github.com/zhihus/dsh-todo-continuation-en.git"
   },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "README.md", "README.ru.md", "README.zh.md"],
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "README.ru.md",
+    "README.zh.md",
+    "UPSTREAM.md"
+  ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
@@ -28,7 +38,10 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "node test/todo-continuation.test.js"
+    "check": "node --check index.js && node --check client.js",
+    "test": "node test/todo-continuation.test.js",
+    "verify": "node --check index.js && node --check client.js && node test/todo-continuation.test.js",
+    "verify:live": "node test/verify-live.mjs"
   },
   "dependencies": {
     "schemastery": "^3.18.0"
