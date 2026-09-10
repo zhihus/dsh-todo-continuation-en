@@ -139,7 +139,8 @@ cancellation never passes through the gate.
   indistinguishable from a plugin that does nothing.
 - `client.js` (browser): renders the "Todo Gate" section in the settings page for
   the interval, the veto cap, the post-compaction switch and its text, the stale
-  advisory text, and the decision-log switch.
+  advisory text, and the decision-log switch — plus the always-visible status chip
+  in the conversation input row (see "The status chip").
 - `cordis.patch.yml`: declares the `dsh-todo-continuation` plugin row.
 - `package.json`: the `@doiiarx/dsh-todo-continuation` manifest with the
   `dsh.client` injection and the `schemastery` dependency.
@@ -202,25 +203,29 @@ Editable in the settings page's "Todo Gate" section:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `staleTodoPromptEveryNTurns` | 5 | turns the standing todo list may go without a rewrite before the model is handed the list back; 0 = disabled |
+| `staleTodoPromptEveryNTurns` | 5 | turns the standing todo list may go without a rewrite before the model is handed the list back; 0 = disabled. A list idle for more than 20 × the interval is abandoned work: the stale reminder stops on its own (`skip:too-old`), while a compaction still hands the list back |
 | `gateMaxSteersPerTurn` | 2 | how many times one turn may be sent back for unfinished todos before the stop is allowed; 0 = the gate never vetoes; clamped to 10 |
 | `gateSubagents` | true | whether a delegated (subagent) session is vetoed the same way; with `false` a child is never sent back, but still receives the list as context |
+| `maxPromptsPerList` | 0 (no cap) | after this many advisories for one unchanged list the plugin goes quiet about it until the list is rewritten or a fresh compaction lands; the entry is logged once at `info` |
 | `promptAfterCompaction` | true | hand the standing list back as soon as a compaction has landed, without waiting for the interval |
 | `compactionPromptTemplate` | built-in default | text of the post-compaction hand-back; no placeholder is required |
 | `staleTodoPromptTemplate` | built-in default | text of the stale-todo advisory; must contain `{n}` |
 | `logDecisions` | false | log one line per boundary and per tool result saying what the plugin did, or why it stayed silent |
 
-The seven settings-page fields are labeled **"Stale-todo prompt interval"**,
+The eight settings-page fields are labeled **"Stale-todo prompt interval"**,
 **"Stop-gate vetoes per turn"**, **"Gate subagents too"**, **"Hand the list back after
-a compaction"**, **"Post-compaction prompt text"**, **"Stale-todo prompt text"** and
-**"Log every decision"**
+a compaction"**, **"Post-compaction prompt text"**, **"Stale-todo prompt text"**,
+**"Per-list reminder cap"** and **"Log every decision"**
 
 Every threshold is read live from the settings document, so saving a value in the
 settings page changes the next boundary without a restart — except
 `logDecisions`, which takes effect from the next decision anyway, and the veto
-cap, which is also clamped to 10 at read time. The backoff threshold (two
-advisories per unchanged list) is a constant on purpose: a knob that lets a user
-turn noise back on is how the feature stops being a defense against noise.
+cap, which is also clamped to 10 at read time. One threshold stays a constant on
+purpose: the abandoned-work horizon. A list the model has ignored for more than
+20 × `staleTodoPromptEveryNTurns` consecutive turns is no longer re-injected by
+the interval (`skip:too-old idle N` in the decision log) — past that point the
+reminder is background noise the model has learned to skip, and only a compaction
+(a genuine "you lost the plan" event) or a rewrite reopens it.
 
 ## What the decision log says
 
@@ -236,9 +241,36 @@ With `logDecisions` on, each boundary and each tool result produces one line:
 Reasons you will see: `prompt:compaction`, `prompt:stale`, `gate:block`,
 `gate:cap-reached`, `gate:off`, `gate:allow`, `gate:skipped subagent` and the skips
 `no-list`, `no-unfinished`, `interval-off`, `no-write-turn`, `idle N<cfg`,
-`cooldown N<cfg`, `quiet` (the backoff above). This is the
+`cooldown N<cfg`, `too-old idle N` (the horizon above), `quiet` (the per-list cap
+above). This is the
 difference between "the plugin is dead" and "nothing was due", which otherwise
 takes a compressed session log to answer.
+
+## The status chip
+
+The host's todo panel follows the turn-local `todos` projection and empties at
+every `turn/start` (and stays empty after an app restart until the model's next
+`todo_write` — see `UPSTREAM.md` for why that is a host-side gap). The plugin
+ships its own always-visible answer: a **"Todo Gate" chip** in the conversation
+input row, next to the composer.
+
+The chip shows, for the active session:
+
+- the standing list counts — `2/3 unfinished`, or `3/3 done` when everything is
+  completed;
+- the idle span in turns (`idle 1t`) — how many turn boundaries passed since the
+  list was last rewritten;
+- the last thing the plugin did — `reminded 10:38`, `restored after compaction
+  11:03`, `restored after resume 09:32`, or `gate sent the turn back 10:37`.
+
+"Restored" is the visible proof of the recovery loop: a compaction hand-back by
+its summary wording, or a reminder that landed in a turn opened after a long
+silence (a shutdown/resume gap of 3+ minutes). The chip derives everything from
+the durable session log tail via the public `session.history` wire — a durable
+backscan that deliberately ignores `turn/start`, unlike the panel. It is
+read-only and fails open: any fetch or parse problem simply hides the chip, it
+never blocks the conversation. Point fixes to the panel itself live in
+`UPSTREAM.md`.
 
 ## Prompt templates and placeholders
 
@@ -310,7 +342,8 @@ Contract:
   no longer pushes the model to create a todo list: a session without any
   `todo_write` gets no advisory at all. **Nothing to migrate**: stale keys left
   in a user settings file are simply ignored at runtime (same as the removed
-  `waitingTodoPrefixes` in 0.2.0) and can be deleted at will.
+  `waitingTodoPrefixes` in 0.2.0) and can be deleted at will — since 0.6.0 they
+  are also named once in the host log at mount.
 - The stale-todo advisory is unchanged — trigger, counter, reset on
   `todo_write`, turn dedup, cooldown, and the default text. Its settings-page
   labels are now **"Stale-todo prompt interval"** / **"Stale-todo prompt
@@ -352,9 +385,9 @@ Contract:
   ignored.
 - **A template that omits `{todos}` gets the list appended**, so an edited
   reminder cannot lose the plan.
-- **Two unanswered advisories about the same list are the last two** (adaptive
-  backoff). Before, an ignored list could be handed back every interval for the rest
-  of the session; the entry into quiet mode is logged once at `info`.
+- **Two unanswered advisories about the same list can be the last two** (adaptive
+  backoff via `maxPromptsPerList`, shipped here undocumented with the default `0`
+  = off — see the 0.7.0 notes). The entry into quiet mode is logged once at `info`.
 - **`gateSubagents`** (default `true`) chooses whether delegated sessions are vetoed
   too. Delegation is read from the durable session header (`origin`,
   `delegationDepth`) with the `subagent/descriptor` log event as fallback; an
@@ -368,6 +401,55 @@ Contract:
   plugin can be mounted as `link:<path>` in the profile's `cordis.patch.yml` instead of
   copying files into `node_modules`, which removes the "did I sync?" question entirely.
 - Nothing to migrate: existing configs keep working and gain the new defaults.
+
+### Upgrade notes (0.6.0 → 0.7.0)
+
+- **`maxPromptsPerList` is documented, and the reminder is no longer unbounded.**
+  The per-list cap shipped in 0.6.0 but was missing from every README and defaulted
+  to `0` (never go quiet — remind on every interval forever). It is now in the
+  settings table. **The abandoned-work horizon** bounds the default behavior
+  without taking the knob away: a list the model has ignored for more than
+  20 × `staleTodoPromptEveryNTurns` consecutive turns stops being reminded by the
+  stale channel (`skip:too-old idle N`); the compaction hand-back is deliberately
+  exempt. The horizon is a constant, not a setting.
+- **A duplicate settings registration no longer degrades.** If another mount of
+  the plugin already owns the namespace (a hot reload, a double bundle entry), the
+  second mount reads the live registration via `settings.get(ns)` instead of
+  falling back to built-in defaults.
+- **The stop boundary fails open.** A plugin bug at the stop boundary is now
+  contained like a mid-turn one: it is reported to the host log and the turn ends
+  ungated, instead of surfacing as a `turn/end` error and costing the user's turn.
+  A malformed `todo/write` record in a replayed log is ignored instead of crashing
+  the read.
+- **Template substitution is single-pass**: a `{placeholder}` inside
+  model-authored todo content is never rewritten by a later key's pass, and the
+  list is no longer duplicated when a custom template embeds `{todos}` before the
+  other placeholders.
+- **Schema dep moved to the host's fork** (`@deepseek-ai/schemastery`), so the
+  settings schema is resolved by the exact code the host runs — no more two
+  divergent copies of schemastery in one profile.
+- **`engines: node >=22.3`** declared (the live-log audit uses
+  `zlib.zstdDecompressSync`); `crypto.randomUUID` is imported from `node:crypto`
+  instead of assumed.
+- **Client page**: the veto input is bounded to the host clamp (10) and the stored
+  value is clamped for display; an unavailable namespace shows an explicit
+  read-only state instead of an eternal "Loading configuration…"; the dead
+  `__DSH_SETTINGS_SEARCH__` registration (no consumer in the host build) and the
+  unused `connection`/`remote` injects are gone.
+- **Faster on long sessions**: the standing-list fold over the session log is
+  incremental (only new events are scanned per check) instead of a full O(log)
+  walk on every tool result.
+- **CI + types**: `pnpm run types` (tsc checkJs over both sides and the tests) and
+  a GitHub Actions workflow running `verify` + `types` + the audit self-test on
+  Node 22.
+- **The live audit (`npm run verify:live`) enforces its contract checks by
+  default** — advisory carries list (A), per-list cap (B), veto cap (C),
+  post-compaction hand-back (D) — with each check starting at the horizon where
+  its feature provably exists (delivery wording for B/C/D), classifying deliveries
+  by the one-line `source.summary` with message shape as fallback, and a
+  `--selftest` mode that needs no live logs.
+- Nothing to migrate: existing configs keep working; set `maxPromptsPerList: 2`
+  if you want the strictest backoff the schema has always supported.
 
 ## Release policy
 

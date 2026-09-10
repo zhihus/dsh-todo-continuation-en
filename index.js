@@ -61,6 +61,8 @@
  * interval is indistinguishable from "the plugin does nothing".
  */
 
+import { randomUUID } from 'node:crypto'
+
 export const name = 'todo-continuation-supervisor'
 export const inject = ['settings']
 
@@ -69,8 +71,6 @@ const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'todo-continuation' }
 const DEFAULT_STALE_EVERY = 5
 const DEFAULT_GATE_MAX_STEERS = 2
 const DEFAULT_PROMPT_AFTER_COMPACTION = true
-// Off by default: per-boundary decision lines are for diagnosis, not for the
-// steady-state log.
 // Off by default: per-boundary decision lines are for diagnosis, not for the
 // steady-state log.
 const DEFAULT_LOG_DECISIONS = false
@@ -88,6 +88,13 @@ const REMOVED_KEYS = ['noTodoPromptEveryNTurns', 'noTodoPromptTemplate', 'waitin
 // pathological list must not turn one reminder into a context flood.
 const MAX_LISTED_TODOS = 30
 const MAX_TODO_LINE_CHARS = 200
+// A standing list the model has ignored for this many intervals in a row is
+// abandoned work, not a live plan: keep re-injecting it past this horizon and the
+// reminder becomes background noise the model has learned to skip (`{n}` keeps
+// growing forever). The compaction hand-back is deliberately NOT subject to this
+// horizon — a condensation is a fresh "you lost the plan" event. Not a setting:
+// an unbounded reminder is a defect, not a preference.
+const MAX_STALE_HORIZON_FACTOR = 20
 
 // `{n}` is the ACTUAL number of turns the standing list has been untouched (it
 // used to be the configured interval, which made the reminder state a number it
@@ -117,16 +124,12 @@ Do not invent items nobody asked for.`
 function report(ctx, scope, error) {
   const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
   const message = `[todo-continuation] ${scope} unavailable: ${detail}`
-  const logger = ctx.root?.logger?.('todo-continuation')
-  if (logger?.error) logger.error('%s', message)
-  console.error(message)
+  emit(ctx, 'error', message)
   return message
 }
 
 function warn(ctx, message) {
-  const logger = ctx.root?.logger?.('todo-continuation')
-  if (logger?.warn) logger.warn('%s', message)
-  console.warn(message)
+  emit(ctx, 'warn', message)
 }
 
 /**
@@ -138,10 +141,14 @@ function warn(ctx, message) {
  * `compaction/end`), so it is the durable marker of "the model lost its copy".
  * @param session - the agent's session, read through its append-only event log.
  * @returns {{ todos: object[] | undefined, writtenTurn: number, size: number,
- *   compactionId: string | null, compactedAfterWrite: boolean }}
+ *   currentTurn: number, compactionId: string | null, compactedAfterWrite: boolean,
+ *   writePosition: number, compactionPosition: number, firstEvent: object | undefined }}
  *   the standing list (undefined when this session never wrote one), the turn that
- *   wrote it, the log size at read time (used to memoize the walk), and the newest
- *   landed compaction with whether it came after that last write.
+ *   wrote it, the log size at read time (used to memoize the walk), the newest
+ *   `turn/start` in the log (the mid-turn channel has no turn in its payload and
+ *   reads this instead), the newest landed compaction with whether it came after
+ *   that last write, the log positions of both records plus the log's first event
+ *   (fold bookkeeping for the incremental scan in {@link standingTodos}).
  */
 function readStandingTodos(session) {
   const events = session.events ?? []
@@ -158,9 +165,16 @@ function readStandingTodos(session) {
       continue
     }
     if (event.type === 'todo/write') {
-      todos = event.data?.todos
-      writtenTurn = turn
-      writePosition = position
+      // A record of the wrong shape is not a list: ignore it and keep the last
+      // valid one. The host invariant (`dsh-tool-todo`) only guards records this
+      // host appended — replayed logs from other builds may not comply, and a
+      // non-array here used to be a TypeError on `.filter` further down.
+      const list = event.data?.todos
+      if (Array.isArray(list)) {
+        todos = list
+        writtenTurn = turn
+        writePosition = position
+      }
       continue
     }
     if (event.type === 'compaction/summary') {
@@ -177,16 +191,56 @@ function readStandingTodos(session) {
     compactionId,
     compactedAfterWrite: compactionPosition > writePosition && compactionPosition >= 0,
     size: events.length,
+    writePosition,
+    compactionPosition,
+    firstEvent: events[0],
   }
 }
 
-/** The standing list is append-only, so the walk is redone only when it grew. */
+/**
+ * The standing list is append-only and its records are frozen, so an already
+ * folded prefix never changes: only the records appended since the last check
+ * are folded (the host itself costs O(new events) per read the same way). The
+ * fold is dropped and redone from scratch when the log shrank or its first event
+ * changed identity — a different session object answering under the same id, or
+ * a replaced replay log, must not inherit another log's fold.
+ */
 function standingTodos(session, state) {
+  const events = session.events ?? []
   const cached = state.standing
-  if (cached !== undefined && cached.size === (session.events?.length ?? 0)) return cached
-  const fresh = readStandingTodos(session)
-  state.standing = fresh
-  return fresh
+  if (cached !== undefined
+    && cached.size === events.length
+    && cached.firstEvent === events[0]) return cached
+  if (cached === undefined || events.length < cached.size || cached.firstEvent !== events[0]) {
+    const fresh = readStandingTodos(session)
+    state.standing = fresh
+    return fresh
+  }
+  const fold = { ...cached }
+  for (let position = cached.size; position < events.length; position++) {
+    const event = events[position]
+    if (event.type === 'turn/start') {
+      if (typeof event.data?.turn === 'number') fold.currentTurn = event.data.turn
+      continue
+    }
+    if (event.type === 'todo/write') {
+      const list = event.data?.todos
+      if (Array.isArray(list)) {
+        fold.todos = list
+        fold.writtenTurn = fold.currentTurn
+        fold.writePosition = position
+      }
+      continue
+    }
+    if (event.type === 'compaction/summary') {
+      fold.compactionId = event.data?.compactionId ?? `(unnamed-${position})`
+      fold.compactionPosition = position
+    }
+  }
+  fold.compactedAfterWrite = fold.compactionPosition > fold.writePosition && fold.compactionPosition >= 0
+  fold.size = events.length
+  state.standing = fold
+  return fold
 }
 
 function unfinishedCount(todos) {
@@ -233,11 +287,14 @@ function isDelegated(session) {
   return false
 }
 
-/** Literal placeholder substitution; unknown placeholders stay verbatim (no template engine). */
+/**
+ * Literal placeholder substitution in ONE pass: a value that itself contains a
+ * placeholder-looking token (todo content is model-authored text!) must never be
+ * re-substituted by a later key's pass, and unknown placeholders stay verbatim
+ * (no template engine).
+ */
 function renderTemplate(template, vars) {
-  let text = template
-  for (const [key, value] of Object.entries(vars)) text = text.split(`{${key}}`).join(String(value))
-  return text
+  return template.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? String(vars[key]) : match))
 }
 
 /**
@@ -286,6 +343,41 @@ function note(ctx, cfg, message) {
 const DEFAULT_MAX_PROMPTS_PER_LIST = 0
 
 /**
+ * The settings defaults this side ships. `client.js` keeps a mirrored copy for
+ * defensive fallback rendering — host and browser cannot share a module in this
+ * package layout — and the suite pins the two copies together with a drift test
+ * so a default changed here can never silently desync the settings page.
+ * Exported for that contract; the plugin's behavior reads the constants above.
+ */
+export const DEFAULTS = Object.freeze({
+  staleEvery: DEFAULT_STALE_EVERY,
+  gateMaxSteers: DEFAULT_GATE_MAX_STEERS,
+  maxGateSteers: MAX_GATE_STEERS,
+  promptAfterCompaction: DEFAULT_PROMPT_AFTER_COMPACTION,
+  logDecisions: DEFAULT_LOG_DECISIONS,
+  gateSubagents: DEFAULT_GATE_SUBAGENTS,
+  maxPromptsPerList: DEFAULT_MAX_PROMPTS_PER_LIST,
+  staleTemplate: DEFAULT_STALE_TEMPLATE,
+  compactionTemplate: DEFAULT_COMPACTION_TEMPLATE,
+})
+
+/**
+ * The identity of "one and the same unchanged list" for the per-list cap and the
+ * quiet period. The turn that wrote a list is NOT its identity: two different
+ * lists written in one turn would share it, and a fresh plan would inherit the
+ * old plan's quiet flag. The identity hashes the rendered form — that is already
+ * the plugin's contract of "the list as the model saw it" — and prefixes the
+ * writing turn so that a later todo_write (an answer, even a verbatim one)
+ * counts as a new list and restarts the clock.
+ */
+function listIdentity(items, writtenTurn) {
+  const source = JSON.stringify(items)
+  let hash = 0
+  for (let index = 0; index < source.length; index++) hash = (hash * 31 + source.charCodeAt(index)) | 0
+  return `t${writtenTurn}:${hash >>> 0}`
+}
+
+/**
  * The standing-list advisory for one boundary, shared by both delivery channels
  * (the stop boundary and a mid-turn tool result). Post-compaction wins over the
  * idle interval — it is the reason the list is needed at all — and either one
@@ -296,8 +388,9 @@ const DEFAULT_MAX_PROMPTS_PER_LIST = 0
  * a fresh compaction lands. `0` (the default) disables the cap entirely. Both
  * exits belong to the model, which is the point — silence must be escapable
  * without a restart.
- * @returns {{ fire: boolean, reason: string, text?: string }} the decision, with a
- *   machine-readable reason either way (that is what `logDecisions` prints).
+ * @returns {{ fire: boolean, reason: string, text?: string, summary?: string }} the
+ *   decision, with a machine-readable reason either way (that is what `logDecisions`
+ *   prints); a fired decision also carries the one-line `summary` for the notice.
  */
 function standingAdvisory(standing, turn, cfg, state, onQuiet) {
   const items = standing.todos
@@ -308,25 +401,26 @@ function standingAdvisory(standing, turn, cfg, state, onQuiet) {
   const total = items.length
   const list = renderTodos(items)
   const idle = turn - standing.writtenTurn
+  const listId = listIdentity(items, standing.writtenTurn)
   const newCompaction = cfg.afterCompaction && standing.compactedAfterWrite
     && standing.compactionId !== null && state.lastCompactionPromptId !== standing.compactionId
-  if (state.quietListId === standing.writtenTurn && !newCompaction) return skipped('quiet')
-  if (state.quietListId !== null && state.quietListId !== standing.writtenTurn) {
+  if (state.quietListId === listId && !newCompaction) return skipped('quiet')
+  if (state.quietListId !== null && state.quietListId !== listId) {
     // The list moved: the model did answer, so the quiet period is over by itself.
     state.quietListId = null
     state.promptListId = null
     state.promptsForList = 0
   }
   const deliver = (reason, text) => {
-    if (state.promptListId !== standing.writtenTurn) {
-      state.promptListId = standing.writtenTurn
+    if (state.promptListId !== listId) {
+      state.promptListId = listId
       state.promptsForList = 1
     } else {
       state.promptsForList += 1
     }
     if (cfg.maxPromptsPerList > 0 && state.promptsForList >= cfg.maxPromptsPerList && state.quietListId === null) {
-      state.quietListId = standing.writtenTurn
-      onQuiet?.(standing.writtenTurn, cfg.maxPromptsPerList)
+      state.quietListId = listId
+      onQuiet?.(listId, cfg.maxPromptsPerList)
     }
     return fired(reason, text,
       `todo-continuation: the model was reminded of its todo list — ${unfinished} of ${total} unfinished (${reason})`)
@@ -340,6 +434,10 @@ function standingAdvisory(standing, turn, cfg, state, onQuiet) {
   }
   if (cfg.staleEvery === 0) return skipped('interval-off')
   if (standing.writtenTurn === 0) return skipped('no-write-turn')
+  // Abandoned-work horizon: past this many idle intervals the plan is noise, not
+  // a plan (see MAX_STALE_HORIZON_FACTOR). The compaction branch above is
+  // deliberately exempt — a condensation is a fresh "you lost the plan" event.
+  if (idle > cfg.staleEvery * MAX_STALE_HORIZON_FACTOR) return skipped(`too-old idle ${idle}`)
   if (idle < cfg.staleEvery) return skipped(`idle ${idle}<${cfg.staleEvery}`)
   // At most one reminder per interval for the same unchanged list.
   if (state.lastStalePromptTurn !== 0 && turn - state.lastStalePromptTurn < cfg.staleEvery) {
@@ -358,7 +456,7 @@ function standingAdvisory(standing, turn, cfg, state, onQuiet) {
  */
 function steerMessage(text, summary) {
   return {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
     source: {
@@ -411,13 +509,12 @@ function readConfig(scope) {
 }
 
 export async function apply(ctx, config = {}) {
-  console.log('[todo-continuation] apply() invoked, inject settings =', ctx.get('settings') !== undefined)
   // 1) Register the persistable settings namespace (edited in the settings page).
   //    Templates are schema-validated: a template without the required `{n}`
   //    placeholder is rejected before it can ever be persisted.
   let scope
   try {
-    const { default: Schema } = await import('schemastery')
+    const { default: Schema } = await import('@deepseek-ai/schemastery')
     const base = {
       staleTodoPromptEveryNTurns: config.staleTodoPromptEveryNTurns ?? DEFAULT_STALE_EVERY,
       gateMaxSteersPerTurn: config.gateMaxSteersPerTurn ?? DEFAULT_GATE_MAX_STEERS,
@@ -438,16 +535,26 @@ export async function apply(ctx, config = {}) {
       gateSubagents: Schema.boolean().default(base.gateSubagents),
       maxPromptsPerList: Schema.number().default(base.maxPromptsPerList),
     }), { base, applies: 'live' })
-    console.log('[todo-continuation] settings namespace registered OK, scope =', scope !== undefined)
   } catch (error) {
     // Degradation is deliberate (a broken namespace must not take the profile
     // down) but it must never be silent: with no namespace the plugin still
     // gates and still reminds, just on built-in thresholds nobody can see.
-    report(ctx, 'settings', error)
-    warn(ctx, `[todo-continuation] DEGRADED: settings namespace is unavailable, using built-in defaults `
-      + `(stale every ${DEFAULT_STALE_EVERY} turns, gate cap ${DEFAULT_GATE_MAX_STEERS} vetoes/turn). `
-      + `The "Todo Gate" settings section will not work until this is fixed.`)
-    scope = null
+    // One degradation is recoverable without a restart: the namespace may already
+    // be registered by another mount of this plugin (a hot reload, a double entry
+    // in the bundle) — the host rejects the SECOND registration but keeps serving
+    // the first one, and `settings.get(ns)` reads that live registration.
+    const live = ctx.settings?.get?.(SETTINGS_NS)
+    if (live !== undefined) {
+      warn(ctx, `[todo-continuation] settings namespace "${SETTINGS_NS}" is already registered — reading the `
+        + `live registration instead of degrading to built-in defaults.`)
+      scope = { get: () => live }
+    } else {
+      report(ctx, 'settings', error)
+      warn(ctx, `[todo-continuation] DEGRADED: settings namespace is unavailable, using built-in defaults `
+        + `(stale every ${DEFAULT_STALE_EVERY} turns, gate cap ${DEFAULT_GATE_MAX_STEERS} vetoes/turn). `
+        + `The "Todo Gate" settings section will not work until this is fixed.`)
+      scope = null
+    }
   }
 
   // Config hygiene, announced once per mount: an inert key and an unreachably high
@@ -469,14 +576,28 @@ export async function apply(ctx, config = {}) {
   //    how many vetoes the current turn has already collected. Losing it (host
   //    restart, session disposal) costs at most one extra reminder — never the
   //    feature, because staleness itself comes from the session log.
+  //    Entries live until `session/disposed`; each holds one standing-list fold
+  //    (references into the frozen log) and a handful of counters, so a long-lived
+  //    host accumulates one small object per session seen, not per turn.
   const states = new Map()
 
   ctx.on('session/disposed', (session) => {
     states.delete(session.id)
   }, { global: true })
 
-  ctx.on('agent/turn-stopping', ({ agent, turn, signal }) => {
-    signal.throwIfAborted()
+  // One logger line per mount with the effective policy — the console.log debug
+  // leftovers this replaces bypassed log levels entirely.
+  const boot = readConfig(scope)
+  emit(ctx, 'info', `mounted: stop-gate cap ${boot.gateMaxSteers} veto(es)/turn, stale advisory every `
+    + `${boot.staleEvery} turn(s), per-list cap ${boot.maxPromptsPerList} `
+    + `(${scope ? 'namespace "todo-continuation" live' : 'DEGRADED: built-in defaults'})`)
+
+  // The whole stop-boundary decision, in one place so the listener can fail open.
+  // The host awaits this event before the boundary commits and turns a throw from
+  // it into `turn/end {kind:'error'}` — a plugin bug must never cost the user's
+  // turn, so the one listener with veto power fails open: the turn simply ends
+  // ungated (the mid-turn channel below has had this isolation since v0.6.0).
+  const runStopGate = (agent, turn) => {
     const cfg = readConfig(scope)
     const sessionId = agent.session.id
     const state = states.get(sessionId) ?? emptyState()
@@ -493,7 +614,7 @@ export async function apply(ctx, config = {}) {
     const decide = (outcome) => note(ctx, cfg,
       `session "${sessionId}" turn ${turn} at=stop-boundary ${outcome}`)
     const tellQuiet = (listId, count) => emit(ctx, 'info',
-      `session "${sessionId}" goes quiet about the list written at turn ${listId}: ${count} advisories in a row `
+      `session "${sessionId}" goes quiet about the list ${listId}: ${count} advisories in a row `
       + `went out without a single todo/write. No more hand-backs until the list changes or a compaction lands.`)
 
     // --- 1) Stop gate: this turn wrote the list and left items unfinished.
@@ -507,11 +628,11 @@ export async function apply(ctx, config = {}) {
         decide('gate:off')
         return
       }
-      const delegated = cfg.gateSubagents ? false : (state.delegated ??= isDelegated(agent.session))
-      if (delegated) {
+      const skipGateForSession = cfg.gateSubagents ? false : (state.delegated ??= isDelegated(agent.session))
+      if (skipGateForSession) {
         // A delegated agent has no user to answer it, which is an argument for both
         // policies; `gateSubagents: false` drops the veto and keeps the context, so
-        // a child can report "good enough" instead of burning its budget on tyding
+        // a child can report "good enough" instead of burning its budget on tidying
         // up a list nobody will read.
         decide(`gate:skipped subagent unfinished=${unfinished}/${standing.todos.length} gateSubagents=off`)
       } else if (state.gateSteers >= cfg.gateMaxSteers) {
@@ -538,6 +659,15 @@ export async function apply(ctx, config = {}) {
     const advisory = standingAdvisory(standing, turn, cfg, state, tellQuiet)
     decide(advisory.fire ? `prompt:${advisory.reason}` : `skip:${advisory.reason}`)
     if (advisory.fire) agent.steer(steerMessage(advisory.text, advisory.summary))
+  }
+
+  ctx.on('agent/turn-stopping', ({ agent, turn, signal }) => {
+    signal.throwIfAborted()
+    try {
+      runStopGate(agent, turn)
+    } catch (error) {
+      report(ctx, 'stop gate', error)
+    }
   })
 
   // Mid-turn delivery (v0.6.0). The stop boundary is unreachable for a turn that
@@ -557,8 +687,8 @@ export async function apply(ctx, config = {}) {
       const standing = standingTodos(agent.session, state)
       // Inside a turn the log's newest `turn/start` is the current turn.
       const advisory = standingAdvisory(standing, standing.currentTurn, cfg, state,
-        (listId, count) => emit(ctx, 'info', `session "${agent.session.id}" goes quiet about the list written at `
-          + `turn ${listId}: ${count} advisories in a row went out without a single todo/write. No more `
+        (listId, count) => emit(ctx, 'info', `session "${agent.session.id}" goes quiet about the list ${listId}: `
+          + `${count} advisories in a row went out without a single todo/write. No more `
           + `hand-backs until the list changes or a compaction lands.`))
       note(ctx, cfg, `session "${agent.session.id}" turn ${standing.currentTurn} at=mid-tool-result `
         + (advisory.fire ? `prompt:${advisory.reason}` : `skip:${advisory.reason}`))

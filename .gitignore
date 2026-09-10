@@ -1,3 +1,6 @@
 node_modules/
 .pnpm-store/
 PROMPT-translate-plugin.md
+# local session state and audit sandboxes — working files, never part of the package
+.todos.json
+.audit/

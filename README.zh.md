@@ -108,7 +108,8 @@ v0.4.0 移除），全部条目已完成的清单同样不会——没有可恢�
   `apply()` 内动态导入，任何失败都退回内置默认值——并且大声报告，因为静默降级的间隔
   与一个什么都不做的插件无法区分。
 - `client.js`（浏览器端）：渲染设置页里的 “Todo Gate” 区块——间隔、每回合否决上限、
-  压缩后交回开关及其文本、过期提示文本，以及决策日志开关。
+  压缩后交回开关及其文本、过期提示文本，以及决策日志开关——外加对话输入行里
+  常驻可见的状态芯片（见「状态芯片」）。
 - `cordis.patch.yml`：声明 `dsh-todo-continuation` 插件行。
 - `package.json`：`@doiiarx/dsh-todo-continuation` 包清单，声明 `dsh.client`
   注入与 `schemastery` 依赖。
@@ -168,9 +169,10 @@ const WEB_SETTINGS_NAMESPACES = [
 
 | 字段 | 默认 | 含义 |
 | --- | --- | --- |
-| `staleTodoPromptEveryNTurns` | 5 | 常驻清单连续多少个回合没有被重写后把清单交还给模型；0 = 关闭 |
+| `staleTodoPromptEveryNTurns` | 5 | 常驻清单连续多少个回合没有被重写后把清单交还给模型；0 = 关闭。清单被闲置超过间隔的 20 倍就是被放弃的工作：间隔提醒会自行停止（`skip:too-old`），而压缩仍会交回清单 |
 | `gateMaxSteersPerTurn` | 2 | 一个回合因未完成 todo 被打回多少次后才放行停止；0 = 门禁永不否决；上限 10 |
 | `gateSubagents` | true | 是否对委派的（subagent）会话同样否决；设为 `false` 就不再打回子代理，但仍会把清单作为上下文交给它 |
+| `maxPromptsPerList` | 0（不设上限） | 对同一个未变化的清单提示这么多次后，插件就对其安静下来，直到清单被重写或新的压缩落地；进入安静态会在日志记一次 `info` |
 | `promptAfterCompaction` | true | 压缩一落地就把清单交回去，不等间隔 |
 | `compactionPromptTemplate` | 内置默认 | 压缩后交回的文本；不要求任何占位符 |
 | `staleTodoPromptTemplate` | 内置默认 | 过期提示文本；必须包含 `{n}` |
@@ -178,8 +180,8 @@ const WEB_SETTINGS_NAMESPACES = [
 
 设置页的八个字段名为 **“Stale-todo prompt interval”**、
 **“Stop-gate vetoes per turn”**、**“Gate subagents too”**、**“Hand the list back after
-a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prompt text”** 和
-**“Log every decision”**。
+a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prompt text”**、
+**“Per-list reminder cap”** 和 **“Log every decision”**。
 
 所有阈值都在用时从 settings 文档读取，所以在设置页保存后下一个边界就生效，无需重启。
 
@@ -197,8 +199,31 @@ a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prom
 你会看到的原因：`prompt:compaction`、`prompt:stale`、`gate:block`、
 `gate:cap-reached`、`gate:off`、`gate:allow`、`gate:skipped subagent`，以及跳过原因
 `no-list`、`no-unfinished`、`interval-off`、`no-write-turn`、`idle N<cfg`、
-`cooldown N<cfg`、`quiet`（就是上面的自适应退避）。这就是
+`cooldown N<cfg`、`too-old idle N`（被放弃工作的地平线）、`quiet`（上面的单清单
+上限）。这就是
 「插件死了」与「还没到点」之间的区别——否则只能去翻压缩过的会话日志。
+
+## 状态芯片
+
+宿主的 todo 面板跟随 turn-local 的 `todos` 投影，在每个 `turn/start` 都会清空
+（应用重启后也会一直为空，直到模型下一次 `todo_write`——为什么这是宿主侧的缺口，
+见 `UPSTREAM.md`）。插件自带的常驻答案是：对话输入行里、紧挨 composer 的
+**「Todo Gate」芯片**。
+
+芯片对当前会话显示：
+
+- 常驻清单计数——`2/3 unfinished`（未完成）或全部完成时的 `3/3 done`；
+- 闲置回合数（`idle 1t`）——距清单上次被重写经过了多少个回合边界；
+- 插件的最后一个动作——`reminded 10:38`（已提醒）、`restored after compaction
+  11:03`（压缩后已恢复）、`restored after resume 09:32`（重新打开后已恢复）或
+  `gate sent the turn back 10:37`（门禁打回了回合）。
+
+「Restored」就是恢复环路的可见证明：压缩后交回按签名文案判定；提醒若落在一个
+长时间静默（关机/重新打开的间隔 ≥ 3 分钟）之后打开的回合里，则判定为 resume 后
+恢复。芯片通过公开的 `session.history` 通道从会话日志的持久尾部推导这一切——
+一个刻意忽略 `turn/start` 的持久 backscan，与面板不同。它只读且 fail-open：
+任何读取或解析错误只是隐藏芯片，绝不会阻塞对话。面板本身的定点修复见
+`UPSTREAM.md`。
 
 ## 提示模板（占位符契约）
 
@@ -265,7 +290,8 @@ a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prom
 - **无 Todo 提示已整体移除**，连同其设置（`noTodoPromptEveryNTurns`、
   `noTodoPromptTemplate`）与界面字段。插件不再催促模型创建 todo 列表：完全没有
   `todo_write` 的会话不会收到任何提示。**无需迁移**：用户 settings.yaml 中残留
-  的键会在运行时被直接忽略（同 0.2.0 移除的 `waitingTodoPrefixes`），可随意删除。
+  的键会在运行时被直接忽略（同 0.2.0 移除的 `waitingTodoPrefixes`），可随意删除——
+  自 0.6.0 起它们还会在挂载时于宿主日志中被点名一次。
 - 过期 Todo 提示保持不变——触发条件、计数器、`todo_write` 重置、turn 去重、
   冷却与默认文本。设置页字段现名为 **「Stale-todo prompt interval」** /
   **「Stale-todo prompt text」**。
@@ -309,6 +335,42 @@ a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prom
   `cordis.patch.yml` 里以 `link:<路径>` 挂载，而不是往 `node_modules` 拷文件，这样
   「我同步了没有」这个问题根本不会出现。
 - 无需迁移：现有配置继续有效，并获得新的默认值。
+
+### 升级说明（0.6.0 → 0.7.0）
+
+- **`maxPromptsPerList` 已补进文档，提醒不再无界。** 单清单上限随 0.6.0 发布，
+  但三份 README 都没写它，默认还是 `0`（永不安静——每个间隔都提醒）。现在它已进
+  设置表。**被放弃工作的地平线**在不拿走旋钮的前提下约束默认行为：清单被模型
+  连续闲置超过 20 × `staleTodoPromptEveryNTurns` 个回合后，间隔通道不再交回
+  （`skip:too-old idle N`）；压缩后的交回刻意不受地平线限制。地平线是常量，
+  不是设置。
+- **重复注册 namespace 不再降级。** 如果插件已被另一处挂载（热重载、bundle 双
+  条目）注册过同一命名空间，第二处挂载会通过 `settings.get(ns)` 读取现役注册，
+  而不是退回内置默认。
+- **停止边界 fail-open。** 插件在停止边界的 bug 现在与回合中段一样被隔离：
+  错误进宿主日志，回合不加否决地结束，而不是变成 `turn/end` 错误、毁掉用户的
+  回合。重放日志里畸形的 `todo/write` 记录会被忽略，而不是击溃读取。
+- **模板替换改为单遍**：todo 内容（模型自己写的文本）里的 `{placeholder}` 不会再
+  被后续键的替换改写；自定义模板把 `{todos}` 放在其他占位符前面时，列表也不再
+  重复。
+- **schema 依赖换到宿主的 fork**（`@deepseek-ai/schemastery`）——解析设置 schema
+  的正是宿主运行的代码，profile 里不再有两份分叉的 schemastery。
+- **声明 `engines: node >=22.3`**（实时审计用到 `zlib.zstdDecompressSync`）；
+  `crypto.randomUUID` 改为从 `node:crypto` 导入。
+- **设置页**：否决输入框的上限与宿主钳制一致（10），存储的超限值按钳制值显示；
+  namespace 不可用时显示明确的只读状态，而不是永远的「Loading configuration…」；
+  删除了宿主构建中没有消费方的 `__DSH_SETTINGS_SEARCH__` 注册与未使用的
+  `connection`/`remote` 注入。
+- **长会话更快**：站立清单对会话日志的折叠改为增量式（每次检查只扫新事件），
+  不再是每个工具结果都完整遍历日志。
+- **CI 与类型**：`pnpm run types`（对两端与测试跑 tsc checkJs），以及 GitHub
+  Actions workflow 在 Node 22 上跑 `verify` + `types` + 审计自测。
+- **实时审计（`npm run verify:live`）默认强制契约**：提示携带清单（A）、单清单
+  上限（B）、否决上限（C）、压缩后交回（D）——每项检查从其特性确实存在的地平线
+  开始（B/C/D 看交付文案），按一行 `source.summary` 分类交付、消息形状兜底，
+  并提供无需实时日志的 `--selftest`。
+- 无需迁移：现有配置继续工作；想要 schema 一直支持的最严格退避，设
+  `maxPromptsPerList: 2` 即可。
 
 ## 发布策略
 

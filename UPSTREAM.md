@@ -78,3 +78,77 @@ than the gap it fixes.
 
 None of the above is a reason to wait: v0.6.0 works around the gap completely, and
 this note only records which part of the workaround belongs to the host.
+
+## Verified host contracts (audit 2026-09-09/10, against the installed host checkout)
+
+The plugin's behavior was re-derived from the installed host code (never from docs)
+during the v0.7.0 audit. The contracts below are the ones the plugin depends on.
+If the host changes any of them, the plugin needs a release, not a patch.
+
+| Contract | Where it lives in the host |
+| --- | --- |
+| `agent/turn-stopping` payload `{ agent, turn, signal }`; a throw from the listener surfaces as `turn/end { kind: 'error' }` — why the boundary must fail open | `@deepseek-ai/dsh-agent-loop/lib/index.js` |
+| `tools/post-execute` waterfall `(exec, result, next)`; `additionalContexts` is the mid-turn injection channel | `@deepseek-ai/dsh-tools` (tool registry waterfall) |
+| `todo/write` appends a full snapshot; the `todos` projection is cleared at `turn/start` | `@deepseek-ai/dsh-tool-todo/lib/index.js` |
+| `compaction/summary` with `compactionId` is the only durable marker of a landed compaction (a failed attempt ends as errored `compaction/end`, no summary) | `@deepseek-ai/dsh-compaction` |
+| delegated sessions: `SessionHeader.origin === 'subagent'`, `delegationDepth > 0`, plus the `subagent/descriptor` log event as a fallback | `@deepseek-ai/dsh-session/lib/types/types.d.ts` |
+| plugin-sourced `user/message` with `source: { kind: 'plugin', form: 'notice', summary }`; `CONTEXT_SUMMARY_MAX_CHARS = 120` | `@deepseek-ai/dsh-llm/lib/types/message.d.ts` |
+| `Session.events` returns a cached deep-frozen snapshot; a previously returned array does not grow later (the basis of the incremental standing-list fold) | `@deepseek-ai/dsh-session/lib/types/index.d.ts` |
+| `settings.register` throws on a duplicate namespace; `ctx.settings.get(ns)` reads the live registration (the P4b recovery path) | `@deepseek-ai/dsh-settings/lib/index.js` |
+| the client settings scope exposes `status: 'unavailable'` when the namespace is not bound (the read-only UI state) | `@deepseek-ai/dsh-client-runtime` (settings-scope types) |
+
+Empirical floor measured in the same audit: 129 sessions / ~1.9 M events under
+`$DSH_HOME/sessions`; one full log walk ≈ 5 ms and the largest session holds
+3229 tool results — the reason the standing-list fold is incremental since v0.7.0.
+Deliveries are classifiable by `source.summary` wording only for builds that write
+notices (this plugin's v0.6.0+ wording); older logs carry shape-only evidence,
+which is why `test/verify-live.mjs` classifies by summary with shape as fallback
+and anchors each contract check at the horizon where its feature provably exists.
+
+## Removed client registration: `__DSH_SETTINGS_SEARCH__`
+
+v0.6.0's client page registered a settings-search index on
+`globalThis.__DSH_SETTINGS_SEARCH__`. The installed host build has no consumer for
+that global (verified by grep over the host checkout on 2026-09-09), so v0.7.0
+removed the registration together with the unused `connection`/`remote` client
+injects. **Restore it only if** the host ships a settings-search consumer that
+reads exactly this global shape (`{ sections: Map, register(sectionId, spec) }`);
+the original registration block lives in git history (`client.js` at the v0.6.0
+tag).
+
+## The UI pays the same tax: the todo panel empties on resume
+
+The turn-local clearing above was derived from what the *model* sees. The GUI's
+todo panel pays the same tax, and there the semantics are simply wrong for the
+consumer: a panel is not a turn.
+
+The authoritative fold is the host-side projection unit
+(`@deepseek-ai/dsh-tool-todo/lib/index.js`, the `todos` session projection):
+
+```js
+apply: (state, event) => {
+    if (event.type === "todo/write") return event.data.todos;
+    if (event.type === "turn/start") return null;   // ← the panel empties here
+    return state;
+}
+```
+
+The browser mirror (`@deepseek-ai/dsh-client-connection/lib/client.js`,
+`backscanTodos`) stops at the most recent `turn/start` the same way, and
+`projectionFramesOf` re-emits the `todos` key on every `todo/write` **and every
+`turn/start`** — so the panel clears at the start of any turn in which the model
+has not rewritten the list yet, and stays empty after an app restart until the
+model's next `todo_write`. Measured on 2026-09-10 (session `0d23a151`, local
+time): the PC was shut down mid-turn at 23:51 the previous evening; the session
+resumed at 09:31; the todo-continuation plugin handed the full 19-item plan back
+to the *model* at 09:32 (delivery in the log); the *panel* showed nothing until
+the model rewrote the list at 10:01 — thirty minutes of "the todo list is gone"
+in the UI while the model was actively working from it.
+
+The fix is one semantic decision, not a feature: **the UI projection of `todos`
+must be durable (last-write-wins over the whole log), because its consumer is
+the user, not the model.** Either drop the `turn/start → null` branch (and the
+mirror's stop) for the wire view, or keep the model-facing turn-local state and
+add a separate durable key (`standingTodos`) for the panel. The plugin cannot
+compensate for this by design: writing the projection would mean writing todos,
+which plugins must not do.

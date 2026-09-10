@@ -1,6 +1,6 @@
 {
   "name": "@doiiarx/dsh-todo-continuation",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Todo-backed turn-stop gate and prompt plugin for DeepSeek Harness: vetoes a stop (bounded per turn) while the turn's todo list has unfinished work, and hands the standing list back to the model when it goes un-updated or right after a context compaction - delivered at the stop boundary and mid-turn, measured from the durable session log, so it survives restarts. Configurable in the settings page.",
   "type": "module",
@@ -33,7 +33,8 @@
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-slots"
       ],
-      "platform": "web"
+      "platform": "web",
+      "immediately": true
     }
   },
   "license": "MIT",
@@ -41,9 +42,18 @@
     "check": "node --check index.js && node --check client.js",
     "test": "node test/todo-continuation.test.js",
     "verify": "node --check index.js && node --check client.js && node test/todo-continuation.test.js",
-    "verify:live": "node test/verify-live.mjs"
+    "verify:live": "node test/verify-live.mjs",
+    "verify:live:strict": "node test/verify-live.mjs --expect-prompt",
+    "types": "tsc --noEmit -p jsconfig.json"
+  },
+  "engines": {
+    "node": ">=22.3"
   },
   "dependencies": {
-    "schemastery": "^3.18.0"
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^7.0.2"
   }
 }

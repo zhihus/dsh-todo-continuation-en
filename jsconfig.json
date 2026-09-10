@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "strict": false
+  },
+  "include": ["index.js", "client.js", "types/**/*.d.ts", "test/**/*.js", "test/**/*.mjs", "scripts/**/*.mjs"]
+}
