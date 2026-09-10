@@ -328,9 +328,9 @@ a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prom
 - **`gateSubagents`**（默认 `true`）决定是否否决委派的会话。委派身份读 durable 会话头
   （`origin`、`delegationDepth`），兜底是日志里的 `subagent/descriptor` 事件；认不出的形态
   按顶层会话处理，所以字段缺失不会让门禁失效。
-- **`UPSTREAM.md`** 是给 DSH 内核的提案：宿主在每个 `turn/start` 清空 `todos` 投影，
-  而最后一份快照就在日志里。门禁只作用于当前回合、`readStandingTodos` 要遍历日志，
-  都是因为这道缝隙。
+- **`UPSTREAM.md`** 是给 DSH 内核的提案，作为完整的一组：跨越 `turn/start` 存活的常驻计划投影、
+  压缩落地后的计划恢复、以及有界 fail-open 停止门禁。每一部分都已由本插件在真实日志上验证，
+  因此提案整体吸收这一组——之后两个市场 todo 插件即可退役。
 - **开发流程**：`npm run verify` = 两侧语法检查 + 全量测试。插件可以在 profile 的
   `cordis.patch.yml` 里以 `link:<路径>` 挂载，而不是往 `node_modules` 拷文件，这样
   「我同步了没有」这个问题根本不会出现。
@@ -371,6 +371,14 @@ a compaction”**、**“Post-compaction prompt text”**、**“Stale-todo prom
   并提供无需实时日志的 `--selftest`。
 - 无需迁移：现有配置继续工作；想要 schema 一直支持的最严格退避，设
   `maxPromptsPerList: 2` 即可。
+
+### 升级说明（0.7.0 → 0.7.1）
+
+- **代码未变；给内核的提案改写为完整的一组。** `UPSTREAM.md` 原先只提出
+  `turn/start` 清空这一道缝隙；现在提出的是本插件已实现、并已在真实日志上验证的全部
+  三个原语——常驻计划的持久投影、压缩落地后的恢复、有界 fail-open 停止门禁——并写明
+  退役路径：内核吸收这组之日，两个市场 todo 插件（包括本项目所从属的
+  `dsh-todo-gate`）即成历史。
 
 ## 发布策略
 

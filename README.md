@@ -393,10 +393,11 @@ Contract:
   `delegationDepth`) with the `subagent/descriptor` log event as fallback; an
   unrecognized shape is treated as a top-level session, so a missing field cannot
   disarm the gate.
-- **`UPSTREAM.md`** now records the host-side change this plugin works around: DSH
-  clears the `todos` projection at every `turn/start` although the last snapshot is in
-  the log. The gate being turn-local, and the log walk in `readStandingTodos`, both
-  exist because of that gap.
+- **`UPSTREAM.md`** is the proposal to DSH core, submitted as a complete set: a durable
+  standing-plan projection that survives `turn/start`, a compaction-landed restore of that plan,
+  and a bounded fail-open stop-gate over it. Every part is already proven by this plugin against
+  real logs, so the document proposes absorbing the whole, after which both marketplace todo
+  plugins retire.
 - **Dev workflow**: `npm run verify` = parse-check both sides + the full suite. The
   plugin can be mounted as `link:<path>` in the profile's `cordis.patch.yml` instead of
   copying files into `node_modules`, which removes the "did I sync?" question entirely.
@@ -450,6 +451,15 @@ Contract:
   `--selftest` mode that needs no live logs.
 - Nothing to migrate: existing configs keep working; set `maxPromptsPerList: 2`
   if you want the strictest backoff the schema has always supported.
+
+### Upgrade notes (0.7.0 → 0.7.1)
+
+- **No code change: the upstream proposal was resubmitted as a complete set.**
+  `UPSTREAM.md` used to propose one host-side gap (the `turn/start` clearing); it now proposes
+  all three primitives the plugin already implements and proves on live logs — the durable
+  standing-plan projection, the compaction-landed restore, and the bounded fail-open stop-gate —
+  together with the explicit retirement path: both marketplace todo plugins, including the
+  `dsh-todo-gate` this project was forked from, are obsolete the day core absorbs them.
 
 ## Release policy
 
