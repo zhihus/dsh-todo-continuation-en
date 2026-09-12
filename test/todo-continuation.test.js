@@ -761,6 +761,23 @@ test('a plugin failure inside the mid-turn listener cannot break tool dispatch',
   assert.equal(contexts(decision).length, 0)
 })
 
+test('an unreadable exec still settles the tool decision before the plugin touches anything', async () => {
+  // The listener promises the tool registry two things: next() runs first, and nothing
+  // this plugin does can throw into dispatch. Reading `exec.agent` used to sit outside
+  // the guard, so a host object whose getter failed escaped the listener — and the
+  // promise held only as long as nobody handed us a strange exec.
+  const { handlers } = await setup({ scopeValue: { ...GATE_OFF, staleTodoPromptEveryNTurns: 1 } })
+  const listener = handlers['tools/post-execute'].at(-1)
+  let nextCalls = 0
+  const exec = { get agent() { throw new Error('exec.agent is unreadable') } }
+  const decision = await listener.call({}, exec, { isError: false, content: [] }, async () => {
+    nextCalls += 1
+    return { kind: 'accept' }
+  })
+  assert.equal(nextCalls, 1, 'next() ran exactly once, before any of our own work')
+  assert.deepEqual(decision, { kind: 'accept' }, 'the settled decision passes through untouched')
+})
+
 // -------------------------------------------------------------- decision logging
 
 /** All P3 tests: the same decisions, but made visible in the host log. */
@@ -871,6 +888,33 @@ test('with maxPromptsPerList=2, two advisories for an unchanged list are the las
   gate(agent, 6)
   assert.equal(agent.steered.length, 3)
   assert.equal(lines(logs, /prompt:stale idle=1$/).length, 2)
+})
+
+test('quiet mode re-arms for every list, not only for the first one', async () => {
+  // The budget is per list, so after a rewrite the NEW list is on a budget of its own —
+  // and it has to be able to fall silent too. Clearing the quiet flag when the list
+  // identity moves is what makes that work; skip it and the plugin reminds about every
+  // later list forever, which is the exact nagging the cap exists to prevent.
+  const { gate, logs } = await setup({
+    scopeValue: { ...GATE_OFF, staleTodoPromptEveryNTurns: 1, maxPromptsPerList: 2, logDecisions: true },
+  })
+  const session = makeSession('p5-rearm').startTurn(1).writeTodos(UNFINISHED)
+  const agent = makeAgent(session)
+  for (const turn of [2, 3, 4]) {
+    session.startTurn(turn)
+    gate(agent, turn)
+  }
+  assert.equal(agent.steered.length, 2, 'the first list went quiet after two advisories')
+  assert.equal(lines(logs, /skip:quiet$/).length, 1)
+  // The model answers by rewriting the list: a new identity, therefore a new budget.
+  session.startTurn(5).writeTodos(MIXED).startTurn(6)
+  gate(agent, 6)
+  session.startTurn(7)
+  gate(agent, 7)
+  session.startTurn(8)
+  gate(agent, 8)
+  assert.equal(agent.steered.length, 4, 'the rewritten list got exactly its own two advisories')
+  assert.equal(lines(logs, /skip:quiet$/).length, 2, 'the rewritten list entered quiet mode as well')
 })
 
 test('with maxPromptsPerList=0 (default), the reminder never goes quiet on its own', async () => {
@@ -1473,14 +1517,27 @@ test('every client registration satisfies the host register contract for its slo
   }
 })
 
-test('client slot ids are our own, so we never shadow a shipped entry by reusing its id', () => {
-  // Reusing a shipped id (the composer docks carry "todo" and "queue") replaces that
-  // cell instead of adding ours.
-  const SHIPPED_IDS = ['todo', 'queue', 'general', 'models', 'plugins', 'plugin-inventory']
+/**
+ * Entry ids already taken by the shipped host, PER SLOT — read out of the installed host
+ * build on 2026-09-12 by scanning every `slots.register({ name, id })` in the bundled
+ * host packages. Collision only ever happens inside one slot: `todo` and `queue` belong
+ * to conversation.input.dock and would not collide with anything here, so a flat id list
+ * across slots is not a test, it is decoration.
+ */
+const HOST_SHIPPED_IDS = {
+  'settings.section': ['general', 'models', 'plugins', 'agent-presets'],
+  'conversation.input.left': [],
+}
+
+test('client slot ids do not address a shipped entry in the same slot', () => {
   for (const { slotName, built } of collectClientRegistrations()) {
-    assert.ok(!SHIPPED_IDS.includes(built.spec.id),
-      `"${built.spec.id}" in slot "${slotName}" collides with a shipped entry id`)
-    assert.equal(built.spec.id, 'todo-continuation', 'both surfaces are keyed by the settings namespace')
+    const shipped = HOST_SHIPPED_IDS[slotName]
+    assert.ok(shipped !== undefined,
+      `the test does not know slot "${slotName}" — scan the installed host for its shipped ` +
+      `entry ids and add them, or an id collision could silently replace a built-in cell`)
+    assert.ok(!shipped.includes(built.spec.id),
+      `id "${built.spec.id}" is already taken in slot "${slotName}" by the host itself`)
+    assert.equal(built.spec.id, 'todo-continuation', 'both surfaces key off the settings namespace')
   }
 })
 

@@ -677,10 +677,14 @@ export async function apply(ctx, config = {}) {
   // never vetoes and never throws: `next()` always runs first, and any failure of
   // ours passes the settled decision through untouched.
   ctx.on('tools/post-execute', async function (exec, result, next) {
+    // next() first and unconditionally: the tool's own decision is settled before this
+    // plugin reads anything at all, so nothing here can delay or veto it. Everything
+    // after it — even the argument access — is inside the guard, because an unreadable
+    // `exec` must still leave the settled decision untouched.
     const decision = await next()
-    const agent = exec?.agent
-    if (!agent?.session) return decision
     try {
+      const agent = exec?.agent
+      if (!agent?.session) return decision
       const cfg = readConfig(scope)
       const state = states.get(agent.session.id) ?? emptyState()
       states.set(agent.session.id, state)

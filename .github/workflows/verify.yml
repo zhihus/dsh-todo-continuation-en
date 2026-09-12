@@ -21,4 +21,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run verify
       - run: pnpm run types
+      # A suite that stays green while the source is deliberately broken is not testing
+      # that behaviour, so the mutation score is part of the gate, not an offline ritual.
+      # SURVIVED is allowed only for mutants annotated as equivalent in the harness.
+      - run: pnpm run test:mutation
       - run: node test/verify-live.mjs --selftest
