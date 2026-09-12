@@ -1,6 +1,6 @@
 {
   "name": "@doiiarx/dsh-todo-continuation",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "description": "Todo-backed turn-stop gate and prompt plugin for DeepSeek Harness: vetoes a stop (bounded per turn) while the turn's todo list has unfinished work, and hands the standing list back to the model when it goes un-updated or right after a context compaction - delivered at the stop boundary and mid-turn, measured from the durable session log, so it survives restarts. Configurable in the settings page.",
   "type": "module",
@@ -31,7 +31,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-slots"
+        "@deepseek-ai/dsh-client-ui-conversation"
       ],
       "platform": "web",
       "immediately": true
