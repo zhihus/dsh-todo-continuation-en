@@ -176,6 +176,31 @@ In `$HOME/.dsh/profiles/web/package.json`:
 
 Then run `pnpm install` in that profile directory.
 
+> **A `git push` does not update the running host.** The profile installs from a
+> GitHub ref and `pnpm-lock.yaml` pins one exact commit, so after tagging a release
+> the profile has to be refreshed to that tag. Until it is, the host keeps serving
+> the previously pinned build — silently, with no error anywhere, because nothing is
+> actually *broken*, just old. Refresh:
+>
+> ```sh
+> pnpm --dir "$HOME/.dsh/profiles/web" add \
+>   "@doiiarx/dsh-todo-continuation@github:zhihus/dsh-todo-continuation-en#vX.Y.Z"
+> ```
+>
+> Then restart the web process: the bundles, the client module graph and every `rev`
+> are resolved at startup, so a page reload alone cannot pick up a new build. Two
+> ways to see the truth rather than assume it:
+>
+> - the version the host will load: `$HOME/.dsh/profiles/web/node_modules/@doiiarx/dsh-todo-continuation/package.json`
+>   (compare its `client.js` against the working copy; a CRLF/LF difference alone is
+>   not a content difference — normalize line endings before hashing);
+> - `node test/verify-live.mjs`, whose whole point is separating «the logic said no»
+>   from «the logic would have said yes, but the running host predates this build».
+>
+> For a development loop, prefer a local link in the profile instead of the GitHub
+> ref — `"@doiiarx/dsh-todo-continuation": "link:C:/path/to/TodoContinuation"` — then
+> working-copy edits reach the host on the next restart without a push per iteration.
+
 ### 2. Expose the namespace to the browser settings page
 
 The browser settings page can only read the `todo-continuation` namespace if it is
