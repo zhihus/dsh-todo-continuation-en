@@ -187,13 +187,19 @@ Then run `pnpm install` in that profile directory.
 >   "@doiiarx/dsh-todo-continuation@github:zhihus/dsh-todo-continuation-en#vX.Y.Z"
 > ```
 >
-> Then reload the browser page: the client module graph and its `rev`s are recomputed
-> per page load, so a new `client.js` — and the GUI it registers — arrives without a
-> restart (measured: the served `rev` changed right after the profile was refreshed,
-> while the host kept running). **Server-side changes do need a restart**: `index.js`
-> is imported into memory at startup, so the gate and the reminders keep running the
-> previously loaded build until then. Two
-> ways to see the truth rather than assume it:
+> Then restart the web process. Two different things are measured here, and conflating
+> them wastes hours:
+>
+> - **The content of an already-mounted client file is re-read per page load.** After the
+>   profile was refreshed under a running host, the served `rev` changed and the browser
+>   got the new bytes with no restart, while the process kept running.
+> - **Which bundles exist is resolved at startup.** Installing a plugin, removing it, or
+>   moving it to another tag changes the bundle list and therefore the client module
+>   graph: nothing shows until the host restarts, and a reload alone then shows nothing
+>   at all, because the plugin is not in the manifest the page is handed.
+>
+> `index.js` is imported into memory at startup too, so server-side changes need the same
+> restart. Two ways to see the truth rather than assume it:
 >
 > - the version the host will load: `$HOME/.dsh/profiles/web/node_modules/@doiiarx/dsh-todo-continuation/package.json`
 >   (compare its `client.js` against the working copy; a CRLF/LF difference alone is
