@@ -443,7 +443,15 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("conversation.input.left", () =>
         ctx.slots.register({
           name: "conversation.input.left",
-          inject: (sessionId) => ({ sessionId, connection: ctx.connection }),
+          id: NAMESPACE,
+          order: 40,
+          label: "Todo gate",
+          // Never hand back an explicit `sessionId: undefined`: the merge order of
+          // injected props over the slot's standard props is the host's business, and
+          // an undefined here would erase the sessionId the seat already provides.
+          inject: (sessionId) => sessionId === undefined || sessionId === null || sessionId === ""
+            ? { connection: ctx.connection }
+            : { sessionId, connection: ctx.connection },
         }, TodoGateChip),
       );
       // No settings-search registration here: the installed host build has no

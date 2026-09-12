@@ -1417,8 +1417,71 @@ test('client apply() registers the settings section and the status-chip slot the
   assert.equal(settings.spec.inject().scope, scope, 'the settings component receives the bound scope')
   const chip = registrations[1].built
   assert.equal(chip.spec.name, 'conversation.input.left')
+  assert.equal(chip.spec.id, 'todo-continuation', 'a list slot is addressed by id; without one the host rejects the entry')
+  assert.equal(typeof chip.spec.order, 'number', 'an explicit order keeps the chip beside the resident composer chrome')
+  assert.equal(chip.spec.label, 'Todo gate')
   assert.deepEqual(chip.spec.inject('session-7'), { sessionId: 'session-7', connection },
     'the chip receives the live sessionId and the connection it reads the durable log through')
+  assert.ok(!('sessionId' in chip.spec.inject(undefined)),
+    'an absent sessionId is never injected as undefined: it would erase the seat\'s own standard prop')
+})
+
+// ---------------------------------------------------------------- host slot contract
+
+/**
+ * The host's SlotCore checks register options against the slot's kind and THROWS —
+ * which fails the whole loader entry, not just the cell:
+ *   failed to apply loader entry … : list slot "conversation.input.left" requires options.id
+ * That message is the shape of this table. Kinds read off the installed host contract
+ * (dsh-cordis-client-runner slot declarations; packages/client/ui-conversation/src/
+ * client/contract/slots.ts) on 2026-09-12.
+ */
+const HOST_SLOT_KINDS = {
+  'settings.section': 'list',
+  'conversation.input.left': 'list',
+}
+const KIND_REQUIRED_OPTION = { list: 'id', keyed: 'key', chain: 'select' }
+
+function collectClientRegistrations() {
+  const registrations = []
+  const built = {
+    settingsScope: { bind: () => ({}) },
+    connection: {},
+    slots: {
+      inject: (slotName, provider) => { registrations.push({ slotName, built: provider() }) },
+      register: (spec, component) => ({ spec, component }),
+    },
+  }
+  client.apply(built)
+  return registrations
+}
+
+test('every client registration satisfies the host register contract for its slot kind', () => {
+  const registrations = collectClientRegistrations()
+  assert.ok(registrations.length > 0, 'the client registers at least one slot')
+  for (const { slotName, built } of registrations) {
+    const kind = HOST_SLOT_KINDS[slotName]
+    assert.ok(kind !== undefined,
+      `the test does not know slot "${slotName}" — look its kind up in the host contract and add it, ` +
+      `otherwise a new registration can ship without ever being checked`)
+    const required = KIND_REQUIRED_OPTION[kind]
+    if (required === undefined) continue
+    assert.equal(typeof built.spec[required], 'string',
+      `slot "${slotName}" is kind "${kind}": options.${required} is required — the host throws and the ` +
+      `entire plugin entry fails to apply, so the GUI loses every surface this plugin contributes`)
+    assert.ok(built.spec[required].length > 0, `options.${required} must not be empty`)
+  }
+})
+
+test('client slot ids are our own, so we never shadow a shipped entry by reusing its id', () => {
+  // Reusing a shipped id (the composer docks carry "todo" and "queue") replaces that
+  // cell instead of adding ours.
+  const SHIPPED_IDS = ['todo', 'queue', 'general', 'models', 'plugins', 'plugin-inventory']
+  for (const { slotName, built } of collectClientRegistrations()) {
+    assert.ok(!SHIPPED_IDS.includes(built.spec.id),
+      `"${built.spec.id}" in slot "${slotName}" collides with a shipped entry id`)
+    assert.equal(built.spec.id, 'todo-continuation', 'both surfaces are keyed by the settings namespace')
+  }
 })
 
 test('client TemplateField: an invalid draft is shown inline and never written; a valid one saves on blur', () => {
