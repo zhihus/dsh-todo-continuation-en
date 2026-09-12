@@ -187,8 +187,12 @@ Then run `pnpm install` in that profile directory.
 >   "@doiiarx/dsh-todo-continuation@github:zhihus/dsh-todo-continuation-en#vX.Y.Z"
 > ```
 >
-> Then restart the web process: the bundles, the client module graph and every `rev`
-> are resolved at startup, so a page reload alone cannot pick up a new build. Two
+> Then reload the browser page: the client module graph and its `rev`s are recomputed
+> per page load, so a new `client.js` — and the GUI it registers — arrives without a
+> restart (measured: the served `rev` changed right after the profile was refreshed,
+> while the host kept running). **Server-side changes do need a restart**: `index.js`
+> is imported into memory at startup, so the gate and the reminders keep running the
+> previously loaded build until then. Two
 > ways to see the truth rather than assume it:
 >
 > - the version the host will load: `$HOME/.dsh/profiles/web/node_modules/@doiiarx/dsh-todo-continuation/package.json`
@@ -199,7 +203,8 @@ Then run `pnpm install` in that profile directory.
 >
 > For a development loop, prefer a local link in the profile instead of the GitHub
 > ref — `"@doiiarx/dsh-todo-continuation": "link:C:/path/to/TodoContinuation"` — then
-> working-copy edits reach the host on the next restart without a push per iteration.
+> working-copy edits reach the browser on a page reload and the server on a restart,
+> without a push per iteration.
 
 ### 2. Expose the namespace to the browser settings page
 
